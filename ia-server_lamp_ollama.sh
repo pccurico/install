@@ -7,6 +7,8 @@
 #
 # Instalador LAMP + IA
 #
+# Versión: 2.1.0
+#
 # Componentes:
 #   Apache2
 #   PHP 8.3
@@ -20,9 +22,14 @@
 #   UFW
 #   SSH
 #
-# Compatible con:
-#   curl ... | sudo bash
+# Ejecución:
+#
 #   sudo bash ia-server_lamp_ollama.sh
+#
+#   curl -fsSL https://raw.githubusercontent.com/pccurico/install/refs/heads/master/ia-server_lamp_ollama.sh | sudo bash
+#
+# Instalación automática:
+#
 #   sudo bash ia-server_lamp_ollama.sh --install
 #
 # ============================================================
@@ -30,7 +37,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="ia-server_lamp_ollama.sh"
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.1.0"
 
 LOG_FILE="/var/log/ia-server/install.log"
 STATE_DIR="/var/lib/ia-server"
@@ -83,12 +90,15 @@ fi
 # ============================================================
 
 prepare_logging() {
+
     mkdir -p "$(dirname "$LOG_FILE")"
     touch "$LOG_FILE"
+
     chmod 640 "$LOG_FILE"
 }
 
 log() {
+
     local message="$*"
 
     printf '[%s] %s\n' \
@@ -97,21 +107,25 @@ log() {
 }
 
 info() {
+
     echo -e "${CYAN}[INFO]${NC} $*"
     log "[INFO] $*"
 }
 
 success() {
+
     echo -e "${GREEN}[OK]${NC} $*"
     log "[OK] $*"
 }
 
 warning() {
+
     echo -e "${YELLOW}[AVISO]${NC} $*"
     log "[AVISO] $*"
 }
 
 error() {
+
     echo -e "${RED}[ERROR]${NC} $*" >&2
     log "[ERROR] $*"
 }
@@ -121,6 +135,7 @@ error() {
 # ============================================================
 
 on_error() {
+
     local line="${1:-unknown}"
     local code="${2:-1}"
     local command="${3:-unknown}"
@@ -144,20 +159,19 @@ on_error() {
 trap 'on_error "$LINENO" "$?" "$BASH_COMMAND"' ERR
 
 # ============================================================
-# TERMINAL INTERACTIVA
+# TERMINAL
 # ============================================================
 
 setup_terminal() {
 
-    # IMPORTANTE:
-    # Cuando se ejecuta:
+    # Cuando el script se ejecuta mediante:
     #
     # curl URL | sudo bash
     #
-    # stdin pertenece a curl.
+    # stdin pertenece al pipe de curl.
     #
-    # Por eso todas las lecturas interactivas deben utilizar
-    # /dev/tty y no stdin.
+    # Se utiliza /dev/tty para que los menús continúen siendo
+    # interactivos.
 
     if [[ -r /dev/tty ]]; then
         exec 3</dev/tty
@@ -168,6 +182,7 @@ setup_terminal() {
 }
 
 read_input() {
+
     local prompt="$1"
     local result_var="$2"
     local value=""
@@ -180,6 +195,7 @@ read_input() {
 }
 
 read_secret() {
+
     local prompt="$1"
     local result_var="$2"
     local value=""
@@ -190,16 +206,20 @@ read_secret() {
     fi
 
     echo
+
     printf -v "$result_var" '%s' "$value"
 }
 
 pause_screen() {
+
     local dummy=""
+
     echo
     read -r -u "$TTY_FD" -p "Presiona ENTER para continuar..." dummy || true
 }
 
 confirm() {
+
     local question="$1"
     local answer=""
 
@@ -216,18 +236,38 @@ confirm() {
 }
 
 # ============================================================
+# VALIDACIONES
+# ============================================================
+
+validate_mysql_identifier() {
+
+    local value="$1"
+
+    [[ "$value" =~ ^[a-zA-Z0-9_$.-]+$ ]]
+}
+
+validate_mysql_host() {
+
+    local value="$1"
+
+    [[ "$value" =~ ^[a-zA-Z0-9_%:.+-]+$ ]]
+}
+
+# ============================================================
 # ROOT
 # ============================================================
 
 require_root() {
 
     if [[ "${EUID}" -ne 0 ]]; then
+
         echo -e "${RED}Este instalador debe ejecutarse como root.${NC}"
         echo
         echo "Ejemplo:"
         echo
         echo "  curl -fsSL https://raw.githubusercontent.com/pccurico/install/refs/heads/master/ia-server_lamp_ollama.sh | sudo bash"
         echo
+
         exit 1
     fi
 }
@@ -239,7 +279,9 @@ require_root() {
 check_os() {
 
     if [[ ! -f /etc/os-release ]]; then
+
         error "No se pudo determinar el sistema operativo."
+
         exit 1
     fi
 
@@ -247,14 +289,18 @@ check_os() {
     source /etc/os-release
 
     if [[ "${ID:-}" != "ubuntu" ]]; then
+
         error "Este instalador requiere Ubuntu."
         error "Sistema detectado: ${PRETTY_NAME:-desconocido}"
+
         exit 1
     fi
 
     if [[ "${VERSION_ID:-}" != "24.04" ]]; then
-        error "Este instalador está diseñado exclusivamente para Ubuntu Server 24.04 LTS."
+
+        error "Este instalador está diseñado para Ubuntu Server 24.04 LTS."
         error "Sistema detectado: ${PRETTY_NAME:-desconocido}"
+
         exit 1
     fi
 
@@ -289,11 +335,14 @@ configure_system_identity() {
     if [[ "$(hostname)" != "ia-server" ]]; then
 
         if confirm "¿Configurar hostname como ia-server?"; then
+
             hostnamectl set-hostname ia-server
+
             success "Hostname configurado: ia-server"
         fi
 
     else
+
         success "Hostname: ia-server"
     fi
 
@@ -366,7 +415,6 @@ install_base_packages() {
         ufw \
         fail2ban \
         cron \
-        curl \
         build-essential \
         pkg-config
 
@@ -406,9 +454,13 @@ install_apache() {
     systemctl restart apache2
 
     if systemctl is-active --quiet apache2; then
+
         success "Apache2 activo."
+
     else
+
         error "Apache2 no quedó activo."
+
         return 1
     fi
 }
@@ -448,7 +500,7 @@ install_php_versions() {
     a2enconf "php${PHP_VERSION}-fpm"
 
     update-alternatives \
-        --install /usr/bin/php php /usr/bin/php${PHP_VERSION} 83
+        --install /usr/bin/php php "/usr/bin/php${PHP_VERSION}" 83
 
     update-alternatives \
         --set php "/usr/bin/php${PHP_VERSION}"
@@ -481,9 +533,13 @@ install_mysql() {
     systemctl restart mysql
 
     if systemctl is-active --quiet mysql; then
+
         success "MySQL activo."
+
     else
+
         error "MySQL no quedó activo."
+
         return 1
     fi
 
@@ -491,14 +547,12 @@ install_mysql() {
 }
 
 # ============================================================
-# CREAR BASE DE DATOS / USUARIO
+# MYSQL - CREAR BASE DE DATOS
 # ============================================================
 
-create_mysql_database() {
+mysql_create_database() {
 
     local db_name=""
-    local db_user=""
-    local db_password=""
 
     echo
     echo "============================================================"
@@ -506,12 +560,20 @@ create_mysql_database() {
     echo "============================================================"
     echo
 
-    read_input "Nombre BD: " db_name
-    read_input "Usuario MySQL: " db_user
-    read_secret "Contraseña MySQL: " db_password
+    read_input "Nombre de la BD: " db_name
 
-    if [[ -z "$db_name" || -z "$db_user" || -z "$db_password" ]]; then
-        error "Todos los valores son obligatorios."
+    if [[ -z "$db_name" ]]; then
+
+        error "El nombre de la BD es obligatorio."
+
+        return 1
+    fi
+
+    if ! validate_mysql_identifier "$db_name"; then
+
+        error "Nombre de BD inválido."
+        error "Utiliza solamente letras, números, _, -, . o \$."
+
         return 1
     fi
 
@@ -519,29 +581,727 @@ create_mysql_database() {
 CREATE DATABASE IF NOT EXISTS \`${db_name}\`
 CHARACTER SET utf8mb4
 COLLATE utf8mb4_unicode_ci;
+SQL
 
-CREATE USER IF NOT EXISTS '${db_user}'@'localhost'
+    success "Base de datos creada/verificada: ${db_name}"
+}
+
+# ============================================================
+# MYSQL - CREAR USUARIO
+# ============================================================
+
+mysql_create_user() {
+
+    local db_user=""
+    local db_host=""
+    local db_password=""
+    local grant_mode=""
+    local grant_database=""
+
+    echo
+    echo "============================================================"
+    echo " CREAR USUARIO MYSQL"
+    echo "============================================================"
+    echo
+    echo "El usuario puede crearse sin crear ninguna base de datos."
+    echo
+
+    read_input "Usuario MySQL: " db_user
+
+    if [[ -z "$db_user" ]]; then
+
+        error "El usuario es obligatorio."
+
+        return 1
+    fi
+
+    if ! validate_mysql_identifier "$db_user"; then
+
+        error "Nombre de usuario inválido."
+
+        return 1
+    fi
+
+    read_input "Host [localhost]: " db_host
+
+    if [[ -z "$db_host" ]]; then
+        db_host="localhost"
+    fi
+
+    if ! validate_mysql_host "$db_host"; then
+
+        error "Host MySQL inválido."
+
+        return 1
+    fi
+
+    read_secret "Contraseña: " db_password
+
+    if [[ -z "$db_password" ]]; then
+
+        error "La contraseña no puede estar vacía."
+
+        return 1
+    fi
+
+    echo
+    echo "Privilegios iniciales:"
+    echo
+    echo "  1) Sin privilegios"
+    echo "  2) ALL PRIVILEGES sobre una BD"
+    echo "  3) ALL PRIVILEGES sobre todas las BD"
+    echo
+
+    read_input "Selecciona [1]: " grant_mode
+
+    if [[ -z "$grant_mode" ]]; then
+        grant_mode="1"
+    fi
+
+    case "$grant_mode" in
+
+        1)
+
+            MYSQL_PWD="$db_password" \
+                mysql --protocol=socket -uroot <<SQL
+CREATE USER IF NOT EXISTS '${db_user}'@'${db_host}'
 IDENTIFIED BY '${db_password}';
 
-ALTER USER '${db_user}'@'localhost'
+ALTER USER '${db_user}'@'${db_host}'
 IDENTIFIED BY '${db_password}';
-
-GRANT ALL PRIVILEGES ON \`${db_name}\`.* TO '${db_user}'@'localhost';
 
 FLUSH PRIVILEGES;
 SQL
 
-    cat > "${CONFIG_DIR}/mysql.conf" <<EOF
-DB_NAME=${db_name}
-DB_USER=${db_user}
-DB_HOST=127.0.0.1
-DB_PORT=3306
-EOF
+            success "Usuario creado sin privilegios: ${db_user}@${db_host}"
+            ;;
 
-    chmod 640 "${CONFIG_DIR}/mysql.conf"
+        2)
 
-    success "Base de datos creada: ${db_name}"
-    success "Usuario creado: ${db_user}"
+            read_input "Nombre de la BD a administrar: " grant_database
+
+            if [[ -z "$grant_database" ]]; then
+
+                error "Debes indicar la BD."
+
+                return 1
+            fi
+
+            if ! validate_mysql_identifier "$grant_database"; then
+
+                error "Nombre de BD inválido."
+
+                return 1
+            fi
+
+            MYSQL_PWD="$db_password" \
+                mysql --protocol=socket -uroot <<SQL
+CREATE USER IF NOT EXISTS '${db_user}'@'${db_host}'
+IDENTIFIED BY '${db_password}';
+
+ALTER USER '${db_user}'@'${db_host}'
+IDENTIFIED BY '${db_password}';
+
+GRANT ALL PRIVILEGES ON \`${grant_database}\`.* TO '${db_user}'@'${db_host}';
+
+FLUSH PRIVILEGES;
+SQL
+
+            success "Usuario creado: ${db_user}@${db_host}"
+            success "ALL PRIVILEGES sobre: ${grant_database}.*"
+            ;;
+
+        3)
+
+            MYSQL_PWD="$db_password" \
+                mysql --protocol=socket -uroot <<SQL
+CREATE USER IF NOT EXISTS '${db_user}'@'${db_host}'
+IDENTIFIED BY '${db_password}';
+
+ALTER USER '${db_user}'@'${db_host}'
+IDENTIFIED BY '${db_password}';
+
+GRANT ALL PRIVILEGES ON *.* TO '${db_user}'@'${db_host}' WITH GRANT OPTION;
+
+FLUSH PRIVILEGES;
+SQL
+
+            success "Usuario creado: ${db_user}@${db_host}"
+            success "ALL PRIVILEGES sobre todas las bases de datos."
+            success "WITH GRANT OPTION habilitado."
+            ;;
+
+        *)
+
+            error "Opción de privilegios no válida."
+
+            return 1
+            ;;
+
+    esac
+}
+
+# ============================================================
+# MYSQL - CREAR BD + USUARIO
+# ============================================================
+
+mysql_create_database_and_user() {
+
+    local db_name=""
+    local db_user=""
+    local db_host=""
+    local db_password=""
+
+    echo
+    echo "============================================================"
+    echo " CREAR BD + USUARIO MYSQL"
+    echo "============================================================"
+    echo
+
+    read_input "Nombre de la BD: " db_name
+
+    if [[ -z "$db_name" ]]; then
+        error "La BD es obligatoria."
+        return 1
+    fi
+
+    if ! validate_mysql_identifier "$db_name"; then
+        error "Nombre de BD inválido."
+        return 1
+    fi
+
+    read_input "Usuario MySQL: " db_user
+
+    if [[ -z "$db_user" ]]; then
+        error "El usuario es obligatorio."
+        return 1
+    fi
+
+    if ! validate_mysql_identifier "$db_user"; then
+        error "Nombre de usuario inválido."
+        return 1
+    fi
+
+    read_input "Host [localhost]: " db_host
+
+    if [[ -z "$db_host" ]]; then
+        db_host="localhost"
+    fi
+
+    if ! validate_mysql_host "$db_host"; then
+        error "Host MySQL inválido."
+        return 1
+    fi
+
+    read_secret "Contraseña: " db_password
+
+    if [[ -z "$db_password" ]]; then
+        error "La contraseña no puede estar vacía."
+        return 1
+    fi
+
+    MYSQL_PWD="$db_password" \
+        mysql --protocol=socket -uroot <<SQL
+CREATE DATABASE IF NOT EXISTS \`${db_name}\`
+CHARACTER SET utf8mb4
+COLLATE utf8mb4_unicode_ci;
+
+CREATE USER IF NOT EXISTS '${db_user}'@'${db_host}'
+IDENTIFIED BY '${db_password}';
+
+ALTER USER '${db_user}'@'${db_host}'
+IDENTIFIED BY '${db_password}';
+
+GRANT ALL PRIVILEGES ON \`${db_name}\`.* TO '${db_user}'@'${db_host}';
+
+FLUSH PRIVILEGES;
+SQL
+
+    success "Base de datos: ${db_name}"
+    success "Usuario: ${db_user}@${db_host}"
+    success "ALL PRIVILEGES sobre ${db_name}.*"
+}
+
+# ============================================================
+# MYSQL - ASIGNAR PRIVILEGIOS
+# ============================================================
+
+mysql_grant_privileges() {
+
+    local db_user=""
+    local db_host=""
+    local database=""
+    local grant_mode=""
+
+    echo
+    echo "============================================================"
+    echo " ASIGNAR PRIVILEGIOS MYSQL"
+    echo "============================================================"
+    echo
+
+    read_input "Usuario MySQL: " db_user
+
+    if [[ -z "$db_user" ]]; then
+        error "El usuario es obligatorio."
+        return 1
+    fi
+
+    if ! validate_mysql_identifier "$db_user"; then
+        error "Nombre de usuario inválido."
+        return 1
+    fi
+
+    read_input "Host [localhost]: " db_host
+
+    if [[ -z "$db_host" ]]; then
+        db_host="localhost"
+    fi
+
+    if ! validate_mysql_host "$db_host"; then
+        error "Host inválido."
+        return 1
+    fi
+
+    echo
+    echo "Tipo de privilegio:"
+    echo
+    echo "  1) ALL PRIVILEGES sobre una BD"
+    echo "  2) ALL PRIVILEGES sobre todas las BD"
+    echo
+
+    read_input "Selecciona [1]: " grant_mode
+
+    if [[ -z "$grant_mode" ]]; then
+        grant_mode="1"
+    fi
+
+    case "$grant_mode" in
+
+        1)
+
+            read_input "Base de datos: " database
+
+            if [[ -z "$database" ]]; then
+                error "La BD es obligatoria."
+                return 1
+            fi
+
+            if ! validate_mysql_identifier "$database"; then
+                error "Nombre de BD inválido."
+                return 1
+            fi
+
+            mysql --protocol=socket -uroot <<SQL
+GRANT ALL PRIVILEGES
+ON \`${database}\`.*
+TO '${db_user}'@'${db_host}';
+
+FLUSH PRIVILEGES;
+SQL
+
+            success "ALL PRIVILEGES asignados sobre ${database}.*"
+            ;;
+
+        2)
+
+            mysql --protocol=socket -uroot <<SQL
+GRANT ALL PRIVILEGES
+ON *.*
+TO '${db_user}'@'${db_host}'
+WITH GRANT OPTION;
+
+FLUSH PRIVILEGES;
+SQL
+
+            success "ALL PRIVILEGES asignados sobre *.*"
+            success "WITH GRANT OPTION habilitado."
+            ;;
+
+        *)
+
+            error "Opción inválida."
+
+            return 1
+            ;;
+
+    esac
+}
+
+# ============================================================
+# MYSQL - REVOCAR PRIVILEGIOS
+# ============================================================
+
+mysql_revoke_privileges() {
+
+    local db_user=""
+    local db_host=""
+    local database=""
+    local revoke_mode=""
+
+    echo
+    echo "============================================================"
+    echo " REVOCAR PRIVILEGIOS MYSQL"
+    echo "============================================================"
+    echo
+
+    read_input "Usuario MySQL: " db_user
+
+    if [[ -z "$db_user" ]]; then
+        error "El usuario es obligatorio."
+        return 1
+    fi
+
+    if ! validate_mysql_identifier "$db_user"; then
+        error "Nombre de usuario inválido."
+        return 1
+    fi
+
+    read_input "Host [localhost]: " db_host
+
+    if [[ -z "$db_host" ]]; then
+        db_host="localhost"
+    fi
+
+    if ! validate_mysql_host "$db_host"; then
+        error "Host inválido."
+        return 1
+    fi
+
+    echo
+    echo "Revocar:"
+    echo
+    echo "  1) Privilegios sobre una BD"
+    echo "  2) Todos los privilegios"
+    echo
+
+    read_input "Selecciona [1]: " revoke_mode
+
+    if [[ -z "$revoke_mode" ]]; then
+        revoke_mode="1"
+    fi
+
+    case "$revoke_mode" in
+
+        1)
+
+            read_input "Base de datos: " database
+
+            if [[ -z "$database" ]]; then
+                error "La BD es obligatoria."
+                return 1
+            fi
+
+            if ! validate_mysql_identifier "$database"; then
+                error "Nombre de BD inválido."
+                return 1
+            fi
+
+            mysql --protocol=socket -uroot <<SQL
+REVOKE ALL PRIVILEGES
+ON \`${database}\`.*
+FROM '${db_user}'@'${db_host}';
+
+FLUSH PRIVILEGES;
+SQL
+
+            success "Privilegios revocados sobre ${database}.*"
+            ;;
+
+        2)
+
+            mysql --protocol=socket -uroot <<SQL
+REVOKE ALL PRIVILEGES, GRANT OPTION
+FROM '${db_user}'@'${db_host}';
+
+FLUSH PRIVILEGES;
+SQL
+
+            success "Privilegios globales revocados."
+            ;;
+
+        *)
+
+            error "Opción inválida."
+
+            return 1
+            ;;
+
+    esac
+}
+
+# ============================================================
+# MYSQL - ELIMINAR USUARIO
+# ============================================================
+
+mysql_drop_user() {
+
+    local db_user=""
+    local db_host=""
+
+    echo
+    echo "============================================================"
+    echo " ELIMINAR USUARIO MYSQL"
+    echo "============================================================"
+    echo
+
+    read_input "Usuario MySQL: " db_user
+
+    if [[ -z "$db_user" ]]; then
+        error "El usuario es obligatorio."
+        return 1
+    fi
+
+    if ! validate_mysql_identifier "$db_user"; then
+        error "Nombre de usuario inválido."
+        return 1
+    fi
+
+    read_input "Host [localhost]: " db_host
+
+    if [[ -z "$db_host" ]]; then
+        db_host="localhost"
+    fi
+
+    if ! validate_mysql_host "$db_host"; then
+        error "Host inválido."
+        return 1
+    fi
+
+    echo
+    warning "Se eliminará el usuario:"
+    echo "  ${db_user}@${db_host}"
+    echo
+
+    if ! confirm "¿Confirmar eliminación?"; then
+        warning "Operación cancelada."
+        return 0
+    fi
+
+    mysql --protocol=socket -uroot <<SQL
+DROP USER IF EXISTS '${db_user}'@'${db_host}';
+
+FLUSH PRIVILEGES;
+SQL
+
+    success "Usuario eliminado: ${db_user}@${db_host}"
+}
+
+# ============================================================
+# MYSQL - ELIMINAR BASE DE DATOS
+# ============================================================
+
+mysql_drop_database() {
+
+    local db_name=""
+
+    echo
+    echo "============================================================"
+    echo " ELIMINAR BASE DE DATOS MYSQL"
+    echo "============================================================"
+    echo
+
+    read_input "Base de datos: " db_name
+
+    if [[ -z "$db_name" ]]; then
+        error "La BD es obligatoria."
+        return 1
+    fi
+
+    if ! validate_mysql_identifier "$db_name"; then
+        error "Nombre de BD inválido."
+        return 1
+    fi
+
+    echo
+    warning "Se eliminará completamente la base de datos:"
+    echo "  ${db_name}"
+    echo
+
+    if ! confirm "¿CONFIRMAR ELIMINACIÓN DEFINITIVA?"; then
+        warning "Operación cancelada."
+        return 0
+    fi
+
+    mysql --protocol=socket -uroot <<SQL
+DROP DATABASE IF EXISTS \`${db_name}\`;
+SQL
+
+    success "Base de datos eliminada: ${db_name}"
+}
+
+# ============================================================
+# MYSQL - LISTAR USUARIOS
+# ============================================================
+
+mysql_list_users() {
+
+    echo
+    echo "============================================================"
+    echo " USUARIOS MYSQL"
+    echo "============================================================"
+    echo
+
+    mysql --protocol=socket -uroot \
+        -e "SELECT User, Host FROM mysql.user ORDER BY User, Host;"
+}
+
+# ============================================================
+# MYSQL - LISTAR BASES
+# ============================================================
+
+mysql_list_databases() {
+
+    echo
+    echo "============================================================"
+    echo " BASES DE DATOS MYSQL"
+    echo "============================================================"
+    echo
+
+    mysql --protocol=socket -uroot \
+        -e "SHOW DATABASES;"
+}
+
+# ============================================================
+# MYSQL - PRIVILEGIOS DE USUARIO
+# ============================================================
+
+mysql_show_grants() {
+
+    local db_user=""
+    local db_host=""
+
+    echo
+    echo "============================================================"
+    echo " PRIVILEGIOS DE USUARIO MYSQL"
+    echo "============================================================"
+    echo
+
+    read_input "Usuario MySQL: " db_user
+
+    if [[ -z "$db_user" ]]; then
+        error "El usuario es obligatorio."
+        return 1
+    fi
+
+    if ! validate_mysql_identifier "$db_user"; then
+        error "Nombre de usuario inválido."
+        return 1
+    fi
+
+    read_input "Host [localhost]: " db_host
+
+    if [[ -z "$db_host" ]]; then
+        db_host="localhost"
+    fi
+
+    if ! validate_mysql_host "$db_host"; then
+        error "Host inválido."
+        return 1
+    fi
+
+    mysql --protocol=socket -uroot \
+        -e "SHOW GRANTS FOR '${db_user}'@'${db_host}';"
+}
+
+# ============================================================
+# MENÚ MYSQL
+# ============================================================
+
+mysql_management_menu() {
+
+    local option=""
+
+    while true; do
+
+        clear 2>/dev/null || true
+
+        echo
+        echo "============================================================"
+        echo " ADMINISTRACIÓN MYSQL"
+        echo "============================================================"
+        echo
+        echo "  1) Crear solamente una base de datos"
+        echo "  2) Crear solamente un usuario"
+        echo "  3) Crear BD + usuario"
+        echo "  4) Asignar ALL PRIVILEGES"
+        echo "  5) Revocar privilegios"
+        echo "  6) Mostrar privilegios de usuario"
+        echo "  7) Listar usuarios"
+        echo "  8) Listar bases de datos"
+        echo "  9) Eliminar usuario"
+        echo " 10) Eliminar base de datos"
+        echo
+        echo "  0) Volver"
+        echo
+
+        if ! read -r -u "$TTY_FD" -p "Selecciona una opción: " option; then
+            return 1
+        fi
+
+        case "$option" in
+
+            1)
+                mysql_create_database
+                pause_screen
+                ;;
+
+            2)
+                mysql_create_user
+                pause_screen
+                ;;
+
+            3)
+                mysql_create_database_and_user
+                pause_screen
+                ;;
+
+            4)
+                mysql_grant_privileges
+                pause_screen
+                ;;
+
+            5)
+                mysql_revoke_privileges
+                pause_screen
+                ;;
+
+            6)
+                mysql_show_grants
+                pause_screen
+                ;;
+
+            7)
+                mysql_list_users
+                pause_screen
+                ;;
+
+            8)
+                mysql_list_databases
+                pause_screen
+                ;;
+
+            9)
+                mysql_drop_user
+                pause_screen
+                ;;
+
+            10)
+                mysql_drop_database
+                pause_screen
+                ;;
+
+            0)
+                return 0
+                ;;
+
+            *)
+                warning "Opción no válida."
+                sleep 1
+                ;;
+
+        esac
+
+    done
 }
 
 # ============================================================
@@ -590,9 +1350,12 @@ EOF
     systemctl restart apache2
 
     if [[ -f /usr/share/phpmyadmin/index.php ]]; then
+
         success "phpMyAdmin instalado."
         success "URL: http://IP-SERVIDOR/phpmyadmin"
+
     else
+
         warning "phpMyAdmin fue instalado pero no se encontró su directorio."
     fi
 }
@@ -698,6 +1461,7 @@ create_omniroute_user() {
     fi
 
     if ! id "$OMNI_USER" >/dev/null 2>&1; then
+
         useradd \
             --system \
             --gid "$OMNI_GROUP" \
@@ -708,6 +1472,7 @@ create_omniroute_user() {
     fi
 
     mkdir -p "$OMNI_HOME"
+
     chown -R "$OMNI_USER:$OMNI_GROUP" "$OMNI_HOME"
 
     chmod 750 "$OMNI_HOME"
@@ -736,7 +1501,9 @@ install_omniroute() {
     omni_bin="$(command -v omniroute || true)"
 
     if [[ -z "$omni_bin" ]]; then
+
         error "No se encontró el ejecutable omniroute."
+
         return 1
     fi
 
@@ -780,10 +1547,15 @@ EOF
     sleep 3
 
     if systemctl is-active --quiet omniroute; then
+
         success "OmniRoute activo."
+
     else
+
         error "OmniRoute no quedó activo."
+
         systemctl --no-pager --full status omniroute || true
+
         return 1
     fi
 
@@ -830,8 +1602,11 @@ install_ollama() {
     info "Instalando Ollama..."
 
     if command -v ollama >/dev/null 2>&1; then
+
         success "Ollama ya está instalado."
+
     else
+
         curl -fsSL https://ollama.com/install.sh | sh
     fi
 
@@ -852,10 +1627,15 @@ EOF
     sleep 3
 
     if systemctl is-active --quiet ollama; then
+
         success "Ollama activo."
+
     else
+
         error "Ollama no quedó activo."
+
         systemctl --no-pager --full status ollama || true
+
         return 1
     fi
 
@@ -917,7 +1697,9 @@ download_ollama_model() {
     read_input "Modelo: " model
 
     if [[ -z "$model" ]]; then
+
         error "Debes indicar un modelo."
+
         return 1
     fi
 
@@ -927,7 +1709,7 @@ download_ollama_model() {
 }
 
 # ============================================================
-# LLMS / LLMFIT
+# LLMMFIT
 # ============================================================
 
 install_llmfit() {
@@ -935,26 +1717,34 @@ install_llmfit() {
     info "Instalando llmfit..."
 
     if command -v llmfit >/dev/null 2>&1; then
+
         success "llmfit ya está instalado."
+
         llmfit --version || true
+
         return 0
     fi
 
     curl -fsSL https://llmfit.axjns.dev/install.sh | sh
 
-    if command -v llmfit >/dev/null 2>&1; then
-        success "llmfit instalado."
-    else
+    if ! command -v llmfit >/dev/null 2>&1; then
+
         if [[ -x "$HOME/.local/bin/llmfit" ]]; then
+
             ln -sf "$HOME/.local/bin/llmfit" /usr/local/bin/llmfit
         fi
     fi
 
     if command -v llmfit >/dev/null 2>&1; then
+
         llmfit --version || true
+
         success "llmfit disponible."
+
     else
+
         error "No se pudo localizar llmfit después de la instalación."
+
         return 1
     fi
 }
@@ -1042,18 +1832,17 @@ configure_firewall() {
     ufw default deny incoming
     ufw default allow outgoing
 
-    # SSH
     ufw allow 22/tcp
-
-    # HTTP / HTTPS
     ufw allow 80/tcp
     ufw allow 443/tcp
 
-    # OmniRoute solamente desde LAN 192.168.1.0/24
-    ufw allow from 192.168.1.0/24 to any port "${OMNI_PORT}" proto tcp
+    # OmniRoute LAN
+    ufw allow from 192.168.1.0/24 \
+        to any port "${OMNI_PORT}" \
+        proto tcp
 
-    # Ollama permanece en localhost por defecto.
-    # No se abre 11434 externamente.
+    # Ollama permanece en localhost.
+    # No se expone a la LAN.
 
     ufw --force enable
 
@@ -1077,8 +1866,11 @@ configure_swap() {
     echo
 
     if swapon --show --noheadings | grep -q .; then
+
         warning "Ya existe una partición/archivo swap."
+
         swapon --show
+
         return 0
     fi
 
@@ -1167,12 +1959,16 @@ service_status() {
             --no-legend 2>/dev/null | grep -q "${service}.service"; then
 
             if systemctl is-active --quiet "$service"; then
+
                 printf "${GREEN}%-25s ACTIVO${NC}\n" "$service"
+
             else
+
                 printf "${RED}%-25s DETENIDO${NC}\n" "$service"
             fi
 
         else
+
             printf "${GRAY}%-25s NO INSTALADO${NC}\n" "$service"
         fi
 
@@ -1198,7 +1994,8 @@ diagnostics() {
 
     echo
     echo "Sistema:"
-    cat /etc/os-release | grep -E '^(PRETTY_NAME|VERSION_ID)='
+    cat /etc/os-release |
+        grep -E '^(PRETTY_NAME|VERSION_ID)='
 
     echo
     echo "Kernel:"
@@ -1206,7 +2003,9 @@ diagnostics() {
 
     echo
     echo "CPU:"
-    lscpu | grep -E 'Model name|CPU\(s\)|Thread|Core|Socket' || true
+    lscpu |
+        grep -E 'Model name|CPU\(s\)|Thread|Core|Socket' ||
+        true
 
     echo
     echo "RAM:"
@@ -1222,7 +2021,9 @@ diagnostics() {
 
     echo
     echo "Puertos:"
-    ss -lntp 2>/dev/null | grep -E ':(22|80|443|3306|20128|11434)\b' || true
+    ss -lntp 2>/dev/null |
+        grep -E ':(22|80|443|3306|20128|11434)\b' ||
+        true
 
     echo
     echo "Servicios:"
@@ -1273,7 +2074,10 @@ server_information() {
 
     echo
     echo "CPU:"
-    lscpu | grep 'Model name' | head -1 | sed 's/^[[:space:]]*//'
+    lscpu |
+        grep 'Model name' |
+        head -1 |
+        sed 's/^[[:space:]]*//'
 
     echo
     echo "CPU lógicas:"
@@ -1281,15 +2085,19 @@ server_information() {
 
     echo
     echo "RAM:"
-    free -h | awk '/Mem:/ {print $2}'
+    free -h |
+        awk '/Mem:/ {print $2}'
 
     echo
     echo "Disco raíz:"
-    df -h / | awk 'NR==2 {print $2 " total / " $4 " disponible"}'
+    df -h / |
+        awk 'NR==2 {print $2 " total / " $4 " disponible"}'
 
     echo
     echo "PHP:"
-    php -v 2>/dev/null | head -1 || true
+    php -v 2>/dev/null |
+        head -1 ||
+        true
 
     echo
     echo "Node:"
@@ -1330,8 +2138,16 @@ get_lan_ip() {
     ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 
     if [[ -z "$ip" ]]; then
-        ip="$(ip -4 route get 1.1.1.1 2>/dev/null \
-            | awk '/src/ {for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')"
+
+        ip="$(
+            ip -4 route get 1.1.1.1 2>/dev/null |
+                awk '/src/ {
+                    for(i=1;i<=NF;i++)
+                        if($i=="src")
+                            print $(i+1);
+                    exit
+                }'
+        )"
     fi
 
     if [[ -z "$ip" ]]; then
@@ -1342,7 +2158,7 @@ get_lan_ip() {
 }
 
 # ============================================================
-# ACTUALIZACIÓN COMPLETA
+# INSTALACIÓN COMPLETA
 # ============================================================
 
 full_install() {
@@ -1354,7 +2170,9 @@ full_install() {
     echo
 
     if ! confirm "¿Iniciar instalación completa?"; then
+
         warning "Instalación cancelada."
+
         return 0
     fi
 
@@ -1447,12 +2265,12 @@ show_header() {
 main_menu() {
 
     local option=""
+    local ip=""
 
     while true; do
 
         show_header
 
-        local ip
         ip="$(get_lan_ip)"
 
         echo "Servidor : $(hostname)"
@@ -1468,7 +2286,7 @@ main_menu() {
         echo "  3) Apache2"
         echo "  4) PHP 8.3"
         echo "  5) MySQL"
-        echo "  6) Crear BD + usuario MySQL"
+        echo "  6) Administración MySQL"
         echo "  7) phpMyAdmin"
         echo "  8) Crear Virtual Host"
         echo
@@ -1495,21 +2313,21 @@ main_menu() {
         echo "  0) Salir"
         echo
 
-        # ====================================================
         # IMPORTANTE:
-        # Se lee desde /dev/tty mediante FD 3.
-        #
-        # Esto permite:
+        # Leer desde /dev/tty mediante FD 3.
+        # Esto permite utilizar:
         #
         # curl URL | sudo bash
         #
         # sin que read reciba EOF del pipe.
-        # ====================================================
 
-        if ! read -r -u "$TTY_FD" -p "Selecciona una opción: " option; then
+        if ! read -r -u "$TTY_FD" \
+            -p "Selecciona una opción: " option; then
+
             echo
+
             warning "No se pudo leer la entrada de la terminal."
-            warning "El instalador requiere una terminal interactiva."
+
             return 1
         fi
 
@@ -1541,8 +2359,7 @@ main_menu() {
                 ;;
 
             6)
-                create_mysql_database
-                pause_screen
+                mysql_management_menu
                 ;;
 
             7)
@@ -1700,6 +2517,8 @@ show_help() {
 IA-SERVER
 PCCURICO SPA
 
+Versión: ${SCRIPT_VERSION}
+
 Uso:
 
   sudo bash ${SCRIPT_NAME}
@@ -1733,11 +2552,26 @@ Componentes:
 
 Puertos:
 
-  22      SSH
-  80      HTTP
-  443     HTTPS
-  ${OMNI_PORT}    OmniRoute LAN
-  ${OLLAMA_PORT}  Ollama localhost
+  22       SSH
+  80       HTTP
+  443      HTTPS
+  ${OMNI_PORT}     OmniRoute LAN
+  ${OLLAMA_PORT}   Ollama localhost
+
+Administración MySQL:
+
+  - Crear BD independiente
+  - Crear usuario independiente
+  - Crear BD + usuario
+  - ALL PRIVILEGES sobre una BD
+  - ALL PRIVILEGES sobre todas las BD
+  - WITH GRANT OPTION
+  - Revocar privilegios
+  - Mostrar GRANTS
+  - Listar usuarios
+  - Listar bases de datos
+  - Eliminar usuarios
+  - Eliminar bases de datos
 
 EOF
 }
@@ -1747,6 +2581,7 @@ EOF
 # ============================================================
 
 show_version() {
+
     echo "${SCRIPT_NAME} ${SCRIPT_VERSION}"
 }
 
