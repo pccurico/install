@@ -1,14 +1,18 @@
-
 #!/usr/bin/env bash
 
 set -u
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.0"
 TTY_FD=3
 
 # ============================================================
-# Timeshift Menu
-# Gestión de snapshots de sistema para Ubuntu Server
+# TIMESHIFT MENU
+# Gestión de snapshots del sistema
+# Ubuntu Server / Ubuntu Desktop
+#
+# Este script administra exclusivamente Timeshift.
+# No modifica Apache, PHP, MySQL, Ollama, OmniRoute
+# ni otros servicios del sistema.
 # ============================================================
 
 setup_tty() {
@@ -20,19 +24,19 @@ setup_tty() {
     fi
 }
 
-pause() {
-    echo
-    read -r -u "$TTY_FD" -p "Presiona ENTER para continuar..."
-}
-
 require_root() {
     if [[ "${EUID}" -ne 0 ]]; then
         echo "ERROR: Este script debe ejecutarse como root."
         echo
-        echo "Ejecuta:"
-        echo "  sudo bash timeshift-menu.sh"
+        echo "Uso:"
+        echo "  sudo ./timeshift-menu.sh"
         exit 1
     fi
+}
+
+pause() {
+    echo
+    read -r -u "$TTY_FD" -p "Presiona ENTER para continuar..."
 }
 
 command_exists() {
@@ -43,68 +47,92 @@ timeshift_installed() {
     command_exists timeshift
 }
 
+# ============================================================
+# INSTALACIÓN
+# ============================================================
+
 install_timeshift() {
-    echo
-    echo "=============================================="
-    echo " INSTALAR TIMESHHIFT"
-    echo "=============================================="
+    clear
+
+    echo "============================================================"
+    echo " INSTALAR TIMESHIFT"
+    echo "============================================================"
     echo
 
     if timeshift_installed; then
         echo "Timeshift ya está instalado."
+        echo
         timeshift --version 2>/dev/null || true
         pause
         return
     fi
 
     echo "Actualizando índice de paquetes..."
-    apt-get update || {
+    echo
+
+    if ! apt-get update; then
+        echo
         echo "ERROR: No se pudo actualizar APT."
         pause
         return
-    }
+    fi
 
     echo
     echo "Instalando Timeshift..."
-    apt-get install -y timeshift || {
+    echo
+
+    if ! apt-get install -y timeshift; then
+        echo
         echo "ERROR: No se pudo instalar Timeshift."
         pause
         return
-    }
+    fi
 
     echo
     echo "Timeshift instalado correctamente."
+    echo
+
     timeshift --version 2>/dev/null || true
 
     pause
 }
 
-check_timeshift() {
-    if ! timeshift_installed; then
-        echo
-        echo "Timeshift no está instalado."
-        echo
-        read -r -u "$TTY_FD" -p "¿Instalar Timeshift ahora? [s/N]: " answer
-
-        if [[ "$answer" =~ ^[SsYy]$ ]]; then
-            install_timeshift
-        fi
-
-        return 1
+ensure_timeshift() {
+    if timeshift_installed; then
+        return 0
     fi
 
-    return 0
+    clear
+
+    echo "============================================================"
+    echo " TIMESHIFT NO ESTÁ INSTALADO"
+    echo "============================================================"
+    echo
+
+    read -r -u "$TTY_FD" -p \
+        "¿Deseas instalar Timeshift ahora? [s/N]: " answer
+
+    if [[ "$answer" =~ ^[SsYy]$ ]]; then
+        install_timeshift
+    fi
+
+    return 1
 }
 
+# ============================================================
+# VERSIÓN
+# ============================================================
+
 show_version() {
-    echo
-    echo "=============================================="
-    echo " VERSIÓN"
-    echo "=============================================="
+    clear
+
+    echo "============================================================"
+    echo " VERSIÓN DE TIMESHIFT"
+    echo "============================================================"
     echo
 
     if timeshift_installed; then
-        timeshift --version
+        timeshift --version 2>/dev/null || true
     else
         echo "Timeshift no está instalado."
     fi
@@ -112,13 +140,18 @@ show_version() {
     pause
 }
 
-list_devices() {
-    check_timeshift || return
+# ============================================================
+# DISPOSITIVOS
+# ============================================================
 
-    echo
-    echo "=============================================="
-    echo " DISPOSITIVOS DISPONIBLES"
-    echo "=============================================="
+list_devices() {
+    ensure_timeshift || return
+
+    clear
+
+    echo "============================================================"
+    echo " DISPOSITIVOS DISPONIBLES PARA TIMESHIFT"
+    echo "============================================================"
     echo
 
     timeshift --list-devices
@@ -126,13 +159,18 @@ list_devices() {
     pause
 }
 
-list_snapshots() {
-    check_timeshift || return
+# ============================================================
+# SNAPSHOTS
+# ============================================================
 
-    echo
-    echo "=============================================="
-    echo " SNAPSHOTS"
-    echo "=============================================="
+list_snapshots() {
+    ensure_timeshift || return
+
+    clear
+
+    echo "============================================================"
+    echo " SNAPSHOTS EXISTENTES"
+    echo "============================================================"
     echo
 
     timeshift --list
@@ -140,13 +178,57 @@ list_snapshots() {
     pause
 }
 
-create_snapshot() {
-    check_timeshift || return
+# ============================================================
+# ESPACIO
+# ============================================================
+
+show_disk_space() {
+    clear
+
+    echo "============================================================"
+    echo " ESPACIO DE ALMACENAMIENTO"
+    echo "============================================================"
+    echo
+
+    echo "Sistemas de archivos:"
+    echo
+
+    df -hT
 
     echo
-    echo "=============================================="
+    echo "Dispositivos:"
+    echo
+
+    lsblk -o NAME,SIZE,FSTYPE,TYPE,MOUNTPOINTS
+
+    pause
+}
+
+# ============================================================
+# CREAR SNAPSHOT
+# ============================================================
+
+create_snapshot() {
+    ensure_timeshift || return
+
+    clear
+
+    echo "============================================================"
     echo " CREAR SNAPSHOT"
-    echo "=============================================="
+    echo "============================================================"
+    echo
+
+    echo "Dispositivos disponibles:"
+    echo
+
+    timeshift --list-devices
+
+    echo
+    echo "Espacio actual:"
+    echo
+
+    df -hT
+
     echo
 
     read -r -u "$TTY_FD" -p \
@@ -157,13 +239,16 @@ create_snapshot() {
     fi
 
     echo
-    echo "Se creará un snapshot con el comentario:"
-    echo
+    echo "Comentario:"
     echo "  $comment"
     echo
 
+    echo "Timeshift determinará automáticamente el dispositivo"
+    echo "configurado para almacenar el snapshot."
+    echo
+
     read -r -u "$TTY_FD" -p \
-        "¿Continuar? [s/N]: " answer
+        "¿Crear el snapshot? [s/N]: " answer
 
     if [[ ! "$answer" =~ ^[SsYy]$ ]]; then
         echo
@@ -173,31 +258,61 @@ create_snapshot() {
     fi
 
     echo
-    echo "Creando snapshot..."
+    echo "============================================================"
+    echo " CREANDO SNAPSHOT"
+    echo "============================================================"
     echo
 
-    timeshift --create --comments "$comment" --scripted
+    timeshift --create \
+        --comments "$comment" \
+        --scripted
 
     result=$?
 
     echo
+    echo "============================================================"
 
     if [[ "$result" -eq 0 ]]; then
-        echo "Snapshot creado correctamente."
+        echo " SNAPSHOT CREADO CORRECTAMENTE"
+        echo "============================================================"
+        echo
+
+        echo "Snapshots actuales:"
+        echo
+
+        timeshift --list
     else
-        echo "ERROR: Timeshift no pudo crear el snapshot."
+        echo " ERROR AL CREAR SNAPSHOT"
+        echo "============================================================"
+        echo
+        echo "Timeshift devolvió código de error: $result"
+        echo
+        echo "El snapshot NO debe considerarse creado."
+        echo
+        echo "Comprueba el espacio disponible:"
+        echo
+        df -hT
+        echo
+        echo "Dispositivos de Timeshift:"
+        echo
+        timeshift --list-devices
     fi
 
     pause
 }
 
-restore_snapshot() {
-    check_timeshift || return
+# ============================================================
+# RESTAURAR
+# ============================================================
 
-    echo
-    echo "=============================================="
+restore_snapshot() {
+    ensure_timeshift || return
+
+    clear
+
+    echo "============================================================"
     echo " RESTAURAR SNAPSHOT"
-    echo "=============================================="
+    echo "============================================================"
     echo
 
     echo "Snapshots disponibles:"
@@ -206,13 +321,16 @@ restore_snapshot() {
     timeshift --list
 
     echo
-    echo "IMPORTANTE:"
-    echo "La restauración puede modificar archivos del sistema."
-    echo "Verifica cuidadosamente el snapshot seleccionado."
+    echo "IMPORTANTE"
+    echo "============================================================"
+    echo
+    echo "La restauración puede reemplazar archivos del sistema."
+    echo
+    echo "Verifica cuidadosamente el snapshot antes de continuar."
     echo
 
     read -r -u "$TTY_FD" -p \
-        "ID del snapshot a restaurar: " snapshot_id
+        "ID exacto del snapshot: " snapshot_id
 
     if [[ -z "$snapshot_id" ]]; then
         echo
@@ -223,11 +341,12 @@ restore_snapshot() {
 
     echo
     echo "Snapshot seleccionado:"
+    echo
     echo "  $snapshot_id"
     echo
 
     read -r -u "$TTY_FD" -p \
-        "¿CONFIRMAS LA RESTAURACIÓN? Escribe RESTAURAR: " confirmation
+        "Para confirmar escribe RESTAURAR: " confirmation
 
     if [[ "$confirmation" != "RESTAURAR" ]]; then
         echo
@@ -242,16 +361,32 @@ restore_snapshot() {
 
     timeshift --restore --snapshot "$snapshot_id"
 
+    result=$?
+
+    echo
+
+    if [[ "$result" -eq 0 ]]; then
+        echo "Restauración finalizada."
+        echo "Es posible que sea necesario reiniciar el sistema."
+    else
+        echo "ERROR: La restauración terminó con código: $result"
+    fi
+
     pause
 }
 
-delete_snapshot() {
-    check_timeshift || return
+# ============================================================
+# ELIMINAR
+# ============================================================
 
-    echo
-    echo "=============================================="
+delete_snapshot() {
+    ensure_timeshift || return
+
+    clear
+
+    echo "============================================================"
     echo " ELIMINAR SNAPSHOT"
-    echo "=============================================="
+    echo "============================================================"
     echo
 
     echo "Snapshots disponibles:"
@@ -260,8 +395,9 @@ delete_snapshot() {
     timeshift --list
 
     echo
+
     read -r -u "$TTY_FD" -p \
-        "ID del snapshot a eliminar: " snapshot_id
+        "ID exacto del snapshot a eliminar: " snapshot_id
 
     if [[ -z "$snapshot_id" ]]; then
         echo
@@ -296,71 +432,66 @@ delete_snapshot() {
     echo
 
     if [[ "$result" -eq 0 ]]; then
-        echo "Snapshot eliminado."
+        echo "Snapshot eliminado correctamente."
     else
         echo "ERROR: No se pudo eliminar el snapshot."
+        echo "Código de salida: $result"
     fi
 
     pause
 }
 
-launch_gui() {
-    check_timeshift || return
-
-    echo
-    echo "=============================================="
-    echo " INTERFAZ GRÁFICA"
-    echo "=============================================="
-    echo
-    echo "Timeshift-gtk requiere un entorno gráfico."
-    echo
-    echo "En Ubuntu Server sin GUI no aparecerá una ventana."
-    echo
-    echo "Comando:"
-    echo "  sudo timeshift-gtk"
-    echo
-
-    read -r -u "$TTY_FD" -p \
-        "¿Intentar iniciar timeshift-gtk? [s/N]: " answer
-
-    if [[ "$answer" =~ ^[SsYy]$ ]]; then
-        timeshift-gtk
-    fi
-}
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
 
 show_config() {
-    check_timeshift || return
+    ensure_timeshift || return
 
-    echo
-    echo "=============================================="
-    echo " CONFIGURACIÓN"
-    echo "=============================================="
+    clear
+
+    echo "============================================================"
+    echo " CONFIGURACIÓN DE TIMESHIFT"
+    echo "============================================================"
     echo
 
     if [[ -f /etc/timeshift/timeshift.json ]]; then
-        cat /etc/timeshift/timeshift.json
-    else
-        echo "No existe todavía:"
+        echo "Archivo:"
         echo "/etc/timeshift/timeshift.json"
         echo
-        echo "Timeshift creará la configuración cuando sea configurado."
+        echo "------------------------------------------------------------"
+        cat /etc/timeshift/timeshift.json
+        echo
+        echo "------------------------------------------------------------"
+    else
+        echo "No existe todavía:"
+        echo
+        echo "/etc/timeshift/timeshift.json"
+        echo
+        echo "Timeshift está funcionando en modo de primera ejecución."
     fi
 
     pause
 }
 
+# ============================================================
+# INFORMACIÓN DEL SISTEMA
+# ============================================================
+
 system_info() {
-    echo
-    echo "=============================================="
+    clear
+
+    echo "============================================================"
     echo " INFORMACIÓN DEL SISTEMA"
-    echo "=============================================="
+    echo "============================================================"
     echo
 
     echo "Hostname:"
     hostname
 
     echo
-    echo "Sistema:"
+    echo "Sistema operativo:"
+
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
         echo "$PRETTY_NAME"
@@ -371,23 +502,95 @@ system_info() {
     uname -r
 
     echo
-    echo "Discos:"
-    lsblk -o NAME,SIZE,FSTYPE,TYPE,MOUNTPOINTS
+    echo "Arquitectura:"
+    uname -m
 
     echo
-    echo "Uso de almacenamiento:"
-    df -h
+    echo "Memoria:"
+    free -h
+
+    echo
+    echo "Almacenamiento:"
+    df -hT
+
+    echo
+    echo "Dispositivos:"
+    lsblk -o NAME,SIZE,FSTYPE,TYPE,MOUNTPOINTS
 
     pause
 }
 
+# ============================================================
+# INTERFAZ GRÁFICA
+# ============================================================
+
+launch_gui() {
+    ensure_timeshift || return
+
+    clear
+
+    echo "============================================================"
+    echo " INTERFAZ GRÁFICA DE TIMESHIFT"
+    echo "============================================================"
+    echo
+
+    if ! command_exists timeshift-gtk; then
+        echo "timeshift-gtk no está disponible."
+        echo
+        echo "Instala el paquete Timeshift:"
+        echo
+        echo "  sudo apt install timeshift"
+        pause
+        return
+    fi
+
+    echo "Este servidor está diseñado para funcionar sin entorno gráfico."
+    echo
+    echo "Si existe un DISPLAY disponible, se intentará iniciar"
+    echo "la interfaz gráfica de Timeshift."
+    echo
+
+    read -r -u "$TTY_FD" -p \
+        "¿Iniciar timeshift-gtk? [s/N]: " answer
+
+    if [[ ! "$answer" =~ ^[SsYy]$ ]]; then
+        echo
+        echo "Operación cancelada."
+        pause
+        return
+    fi
+
+    echo
+
+    timeshift-gtk
+
+    result=$?
+
+    echo
+
+    if [[ "$result" -ne 0 ]]; then
+        echo "No se pudo iniciar la interfaz gráfica."
+        echo
+        echo "En Ubuntu Server sin GUI esto es normal."
+        echo "La administración por consola continúa disponible."
+    fi
+
+    pause
+}
+
+# ============================================================
+# MENÚ PRINCIPAL
+# ============================================================
+
 main_menu() {
+
     while true; do
+
         clear
 
         echo "============================================================"
-        echo "                 TIMESHIFT MENU"
-        echo "                 Versión $SCRIPT_VERSION"
+        echo "                    TIMESHIFT MENU"
+        echo "                    Versión $SCRIPT_VERSION"
         echo "============================================================"
         echo
         echo "  1) Instalar Timeshift"
@@ -398,8 +601,9 @@ main_menu() {
         echo "  6) Restaurar snapshot"
         echo "  7) Eliminar snapshot"
         echo "  8) Ver configuración"
-        echo "  9) Información del sistema"
-        echo " 10) Abrir interfaz gráfica"
+        echo "  9) Ver espacio y discos"
+        echo " 10) Información del sistema"
+        echo " 11) Abrir interfaz gráfica"
         echo
         echo "  0) Salir"
         echo
@@ -409,47 +613,65 @@ main_menu() {
         read -r -u "$TTY_FD" -p "Selecciona una opción: " option
 
         case "$option" in
+
             1)
                 install_timeshift
                 ;;
+
             2)
                 show_version
                 ;;
+
             3)
                 list_devices
                 ;;
+
             4)
                 list_snapshots
                 ;;
+
             5)
                 create_snapshot
                 ;;
+
             6)
                 restore_snapshot
                 ;;
+
             7)
                 delete_snapshot
                 ;;
+
             8)
                 show_config
                 ;;
+
             9)
+                show_disk_space
+                ;;
+
+            10)
                 system_info
                 ;;
-            10)
+
+            11)
                 launch_gui
                 ;;
+
             0)
-                echo
-                echo "Saliendo."
+                clear
+                echo "Timeshift Menu finalizado."
                 exit 0
                 ;;
+
             *)
                 echo
                 echo "Opción no válida."
                 sleep 1
                 ;;
+
         esac
+
     done
 }
 
@@ -460,34 +682,3 @@ main_menu() {
 require_root
 setup_tty
 main_menu
-
-
-### Guardarlo en tu repositorio
-
-Por ejemplo:
-
-
-nano timeshift-menu.sh
-
-
-Pegas el contenido y guardas.
-
-Luego:
-
-
-chmod +x timeshift-menu.sh
-
-
-Para ejecutarlo:
-
-
-sudo ./timeshift-menu.sh
-
-
-Y también funcionará correctamente descargándolo mediante `curl`, porque el menú lee desde `/dev/tty` y **no desde el pipe de `curl`**:
-
-
-curl -fsSL https://raw.githubusercontent.com/pccurico/install/master/timeshift-menu.sh | sudo bash
-
-
-El script **solo administra Timeshift**. No instala ni modifica Apache, PHP, MySQL, Ollama, OmniRoute ni el resto de tu configuración.
