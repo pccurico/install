@@ -2,17 +2,20 @@
 
 set -u
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 TTY_FD=3
 
 # ============================================================
 # TIMESHIFT MENU
-# Gestión de snapshots del sistema
-# Ubuntu Server / Ubuntu Desktop
+# Ubuntu Server
 #
-# Este script administra exclusivamente Timeshift.
-# No modifica Apache, PHP, MySQL, Ollama, OmniRoute
-# ni otros servicios del sistema.
+# Política:
+# - Timeshift RSYNC
+# - Configuración predeterminada de Timeshift
+# - Sin particiones nuevas
+# - Sin LVM nuevo
+# - Excluir modelos de Ollama
+# - Conservar configuración de Ollama
 # ============================================================
 
 setup_tty() {
@@ -25,11 +28,10 @@ setup_tty() {
 }
 
 require_root() {
-    if [[ "${EUID}" -ne 0 ]]; then
-        echo "ERROR: Este script debe ejecutarse como root."
+    if [[ "$EUID" -ne 0 ]]; then
+        echo "ERROR: Ejecuta este script con sudo."
         echo
-        echo "Uso:"
-        echo "  sudo ./timeshift-menu.sh"
+        echo "sudo ./timeshift-menu.sh"
         exit 1
     fi
 }
@@ -39,19 +41,36 @@ pause() {
     read -r -u "$TTY_FD" -p "Presiona ENTER para continuar..."
 }
 
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
+timeshift_installed() {
+    command -v timeshift >/dev/null 2>&1
 }
 
-timeshift_installed() {
-    command_exists timeshift
+ensure_timeshift() {
+    if timeshift_installed; then
+        return 0
+    fi
+
+    echo
+    echo "Timeshift no está instalado."
+    echo
+
+    read -r -u "$TTY_FD" -p \
+        "¿Deseas instalar Timeshift? [s/N]: " answer
+
+    if [[ "$answer" =~ ^[SsYy]$ ]]; then
+        install_timeshift
+        return $?
+    fi
+
+    return 1
 }
 
 # ============================================================
-# INSTALACIÓN
+# INSTALAR
 # ============================================================
 
 install_timeshift() {
+
     clear
 
     echo "============================================================"
@@ -61,18 +80,17 @@ install_timeshift() {
 
     if timeshift_installed; then
         echo "Timeshift ya está instalado."
-        echo
         timeshift --version 2>/dev/null || true
         pause
         return
     fi
 
-    echo "Actualizando índice de paquetes..."
+    echo "Actualizando repositorios..."
     echo
 
     if ! apt-get update; then
         echo
-        echo "ERROR: No se pudo actualizar APT."
+        echo "ERROR: Falló apt-get update."
         pause
         return
     fi
@@ -81,58 +99,33 @@ install_timeshift() {
     echo "Instalando Timeshift..."
     echo
 
-    if ! apt-get install -y timeshift; then
+    if apt-get install -y timeshift; then
+        echo
+        echo "Timeshift instalado correctamente."
+        timeshift --version 2>/dev/null || true
+    else
         echo
         echo "ERROR: No se pudo instalar Timeshift."
-        pause
-        return
     fi
-
-    echo
-    echo "Timeshift instalado correctamente."
-    echo
-
-    timeshift --version 2>/dev/null || true
 
     pause
 }
 
-ensure_timeshift() {
-    if timeshift_installed; then
-        return 0
-    fi
-
-    clear
-
-    echo "============================================================"
-    echo " TIMESHIFT NO ESTÁ INSTALADO"
-    echo "============================================================"
-    echo
-
-    read -r -u "$TTY_FD" -p \
-        "¿Deseas instalar Timeshift ahora? [s/N]: " answer
-
-    if [[ "$answer" =~ ^[SsYy]$ ]]; then
-        install_timeshift
-    fi
-
-    return 1
-}
-
 # ============================================================
-# VERSIÓN
+# VERSION
 # ============================================================
 
 show_version() {
+
     clear
 
     echo "============================================================"
-    echo " VERSIÓN DE TIMESHIFT"
+    echo " VERSIÓN"
     echo "============================================================"
     echo
 
     if timeshift_installed; then
-        timeshift --version 2>/dev/null || true
+        timeshift --version
     else
         echo "Timeshift no está instalado."
     fi
@@ -145,12 +138,13 @@ show_version() {
 # ============================================================
 
 list_devices() {
+
     ensure_timeshift || return
 
     clear
 
     echo "============================================================"
-    echo " DISPOSITIVOS DISPONIBLES PARA TIMESHIFT"
+    echo " DISPOSITIVOS DE TIMESHIFT"
     echo "============================================================"
     echo
 
@@ -164,12 +158,13 @@ list_devices() {
 # ============================================================
 
 list_snapshots() {
+
     ensure_timeshift || return
 
     clear
 
     echo "============================================================"
-    echo " SNAPSHOTS EXISTENTES"
+    echo " SNAPSHOTS"
     echo "============================================================"
     echo
 
@@ -182,24 +177,64 @@ list_snapshots() {
 # ESPACIO
 # ============================================================
 
-show_disk_space() {
+show_space() {
+
     clear
 
     echo "============================================================"
-    echo " ESPACIO DE ALMACENAMIENTO"
+    echo " ESPACIO DE DISCO"
     echo "============================================================"
-    echo
-
-    echo "Sistemas de archivos:"
     echo
 
     df -hT
 
     echo
-    echo "Dispositivos:"
+    echo "DISPOSITIVOS:"
     echo
 
     lsblk -o NAME,SIZE,FSTYPE,TYPE,MOUNTPOINTS
+
+    pause
+}
+
+# ============================================================
+# CONFIGURAR EXCLUSIÓN OLLAMA
+# ============================================================
+
+configure_ollama_exclusion() {
+
+    ensure_timeshift || return
+
+    clear
+
+    echo "============================================================"
+    echo " EXCLUSIÓN DE MODELOS OLLAMA"
+    echo "============================================================"
+    echo
+
+    echo "Se excluirán los modelos de Ollama:"
+    echo
+    echo "  /var/lib/ollama/models"
+    echo
+    echo "La configuración de Ollama NO será excluida."
+    echo
+    echo "Esto significa que se conservarán:"
+    echo
+    echo "  /etc/ollama/"
+    echo "  configuración del servicio"
+    echo "  configuración del sistema"
+    echo
+    echo "y solamente se excluirán los archivos grandes de modelos."
+    echo
+
+    if [[ ! -d /var/lib/ollama/models ]]; then
+        echo "Aviso: el directorio de modelos todavía no existe."
+        echo
+    else
+        echo "Tamaño actual de modelos:"
+        du -sh /var/lib/ollama/models 2>/dev/null || true
+        echo
+    fi
 
     pause
 }
@@ -209,13 +244,27 @@ show_disk_space() {
 # ============================================================
 
 create_snapshot() {
+
     ensure_timeshift || return
 
     clear
 
     echo "============================================================"
-    echo " CREAR SNAPSHOT"
+    echo " CREAR SNAPSHOT RSYNC"
     echo "============================================================"
+    echo
+
+    echo "Configuración:"
+    echo
+    echo "  Tipo:             RSYNC"
+    echo "  Particiones:      Ninguna nueva"
+    echo "  Modelos Ollama:   EXCLUIDOS"
+    echo "  Configuración:    CONSERVADA"
+    echo
+
+    echo "Exclusión:"
+    echo
+    echo "  /var/lib/ollama/models"
     echo
 
     echo "Dispositivos disponibles:"
@@ -243,12 +292,8 @@ create_snapshot() {
     echo "  $comment"
     echo
 
-    echo "Timeshift determinará automáticamente el dispositivo"
-    echo "configurado para almacenar el snapshot."
-    echo
-
     read -r -u "$TTY_FD" -p \
-        "¿Crear el snapshot? [s/N]: " answer
+        "¿Crear snapshot? [s/N]: " answer
 
     if [[ ! "$answer" =~ ^[SsYy]$ ]]; then
         echo
@@ -263,8 +308,19 @@ create_snapshot() {
     echo "============================================================"
     echo
 
-    timeshift --create \
+    # --------------------------------------------------------
+    # Importante:
+    #
+    # Timeshift utiliza su configuración normal.
+    # La exclusión se aplica mediante --exclude.
+    #
+    # Se excluyen únicamente los modelos de Ollama.
+    # --------------------------------------------------------
+
+    timeshift \
+        --create \
         --comments "$comment" \
+        --exclude "/var/lib/ollama/models/**" \
         --scripted
 
     result=$?
@@ -272,31 +328,56 @@ create_snapshot() {
     echo
     echo "============================================================"
 
-    if [[ "$result" -eq 0 ]]; then
-        echo " SNAPSHOT CREADO CORRECTAMENTE"
-        echo "============================================================"
-        echo
+    if [[ "$result" -ne 0 ]]; then
 
-        echo "Snapshots actuales:"
-        echo
-
-        timeshift --list
-    else
         echo " ERROR AL CREAR SNAPSHOT"
         echo "============================================================"
         echo
-        echo "Timeshift devolvió código de error: $result"
+        echo "Timeshift devolvió código de salida: $result"
         echo
-        echo "El snapshot NO debe considerarse creado."
+        echo "El snapshot NO se considera creado."
         echo
-        echo "Comprueba el espacio disponible:"
-        echo
-        df -hT
-        echo
-        echo "Dispositivos de Timeshift:"
-        echo
-        timeshift --list-devices
+
+        pause
+        return
+
     fi
+
+    # --------------------------------------------------------
+    # Verificación adicional.
+    #
+    # No mostramos éxito solamente porque el comando terminó.
+    # Comprobamos que Timeshift tenga snapshots.
+    # --------------------------------------------------------
+
+    echo "Verificando snapshot..."
+    echo
+
+    snapshot_output="$(timeshift --list 2>&1)"
+    list_result=$?
+
+    if [[ "$list_result" -ne 0 ]]; then
+        echo "ERROR: No se pudo verificar el snapshot."
+        echo
+        echo "$snapshot_output"
+        pause
+        return
+    fi
+
+    if echo "$snapshot_output" | grep -q "No snapshots found"; then
+        echo "ERROR: Timeshift no tiene snapshots registrados."
+        echo
+        echo "$snapshot_output"
+        pause
+        return
+    fi
+
+    echo
+    echo "============================================================"
+    echo " SNAPSHOT CREADO CORRECTAMENTE"
+    echo "============================================================"
+    echo
+    echo "$snapshot_output"
 
     pause
 }
@@ -306,6 +387,7 @@ create_snapshot() {
 # ============================================================
 
 restore_snapshot() {
+
     ensure_timeshift || return
 
     clear
@@ -315,25 +397,17 @@ restore_snapshot() {
     echo "============================================================"
     echo
 
-    echo "Snapshots disponibles:"
-    echo
-
     timeshift --list
 
     echo
-    echo "IMPORTANTE"
-    echo "============================================================"
-    echo
-    echo "La restauración puede reemplazar archivos del sistema."
-    echo
-    echo "Verifica cuidadosamente el snapshot antes de continuar."
+    echo "ADVERTENCIA"
+    echo "La restauración puede modificar archivos del sistema."
     echo
 
     read -r -u "$TTY_FD" -p \
-        "ID exacto del snapshot: " snapshot_id
+        "ID del snapshot: " snapshot_id
 
     if [[ -z "$snapshot_id" ]]; then
-        echo
         echo "No se indicó ningún snapshot."
         pause
         return
@@ -341,12 +415,11 @@ restore_snapshot() {
 
     echo
     echo "Snapshot seleccionado:"
-    echo
-    echo "  $snapshot_id"
+    echo "$snapshot_id"
     echo
 
     read -r -u "$TTY_FD" -p \
-        "Para confirmar escribe RESTAURAR: " confirmation
+        "Escribe RESTAURAR para confirmar: " confirmation
 
     if [[ "$confirmation" != "RESTAURAR" ]]; then
         echo
@@ -367,19 +440,22 @@ restore_snapshot() {
 
     if [[ "$result" -eq 0 ]]; then
         echo "Restauración finalizada."
-        echo "Es posible que sea necesario reiniciar el sistema."
+        echo
+        echo "Se recomienda reiniciar el servidor."
     else
-        echo "ERROR: La restauración terminó con código: $result"
+        echo "ERROR: Restauración fallida."
+        echo "Código: $result"
     fi
 
     pause
 }
 
 # ============================================================
-# ELIMINAR
+# ELIMINAR SNAPSHOT
 # ============================================================
 
 delete_snapshot() {
+
     ensure_timeshift || return
 
     clear
@@ -389,30 +465,26 @@ delete_snapshot() {
     echo "============================================================"
     echo
 
-    echo "Snapshots disponibles:"
-    echo
-
     timeshift --list
 
     echo
 
     read -r -u "$TTY_FD" -p \
-        "ID exacto del snapshot a eliminar: " snapshot_id
+        "ID del snapshot: " snapshot_id
 
     if [[ -z "$snapshot_id" ]]; then
-        echo
         echo "No se indicó ningún snapshot."
         pause
         return
     fi
 
     echo
-    echo "Snapshot seleccionado:"
+    echo "Snapshot:"
     echo "  $snapshot_id"
     echo
 
     read -r -u "$TTY_FD" -p \
-        "¿Eliminar este snapshot? [s/N]: " answer
+        "¿Eliminar? [s/N]: " answer
 
     if [[ ! "$answer" =~ ^[SsYy]$ ]]; then
         echo
@@ -422,7 +494,7 @@ delete_snapshot() {
     fi
 
     echo
-    echo "Eliminando snapshot..."
+    echo "Eliminando..."
     echo
 
     timeshift --delete --snapshot "$snapshot_id"
@@ -434,8 +506,8 @@ delete_snapshot() {
     if [[ "$result" -eq 0 ]]; then
         echo "Snapshot eliminado correctamente."
     else
-        echo "ERROR: No se pudo eliminar el snapshot."
-        echo "Código de salida: $result"
+        echo "ERROR al eliminar snapshot."
+        echo "Código: $result"
     fi
 
     pause
@@ -446,39 +518,35 @@ delete_snapshot() {
 # ============================================================
 
 show_config() {
+
     ensure_timeshift || return
 
     clear
 
     echo "============================================================"
-    echo " CONFIGURACIÓN DE TIMESHIFT"
+    echo " CONFIGURACIÓN TIMESHIFT"
     echo "============================================================"
     echo
 
     if [[ -f /etc/timeshift/timeshift.json ]]; then
-        echo "Archivo:"
-        echo "/etc/timeshift/timeshift.json"
-        echo
-        echo "------------------------------------------------------------"
         cat /etc/timeshift/timeshift.json
-        echo
-        echo "------------------------------------------------------------"
     else
         echo "No existe todavía:"
         echo
         echo "/etc/timeshift/timeshift.json"
         echo
-        echo "Timeshift está funcionando en modo de primera ejecución."
+        echo "Timeshift está utilizando su configuración inicial."
     fi
 
     pause
 }
 
 # ============================================================
-# INFORMACIÓN DEL SISTEMA
+# SISTEMA
 # ============================================================
 
 system_info() {
+
     clear
 
     echo "============================================================"
@@ -490,7 +558,7 @@ system_info() {
     hostname
 
     echo
-    echo "Sistema operativo:"
+    echo "Sistema:"
 
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
@@ -502,84 +570,64 @@ system_info() {
     uname -r
 
     echo
-    echo "Arquitectura:"
-    uname -m
-
-    echo
     echo "Memoria:"
     free -h
 
     echo
-    echo "Almacenamiento:"
-    df -hT
+    echo "Discos:"
+    lsblk -o NAME,SIZE,FSTYPE,TYPE,MOUNTPOINTS
 
     echo
-    echo "Dispositivos:"
-    lsblk -o NAME,SIZE,FSTYPE,TYPE,MOUNTPOINTS
+    echo "Espacio:"
+    df -hT
 
     pause
 }
 
 # ============================================================
-# INTERFAZ GRÁFICA
+# GUI
 # ============================================================
 
 launch_gui() {
+
     ensure_timeshift || return
 
     clear
 
     echo "============================================================"
-    echo " INTERFAZ GRÁFICA DE TIMESHIFT"
+    echo " INTERFAZ GRÁFICA"
     echo "============================================================"
     echo
 
-    if ! command_exists timeshift-gtk; then
+    if ! command -v timeshift-gtk >/dev/null 2>&1; then
         echo "timeshift-gtk no está disponible."
         echo
-        echo "Instala el paquete Timeshift:"
+        echo "Instala Timeshift con:"
         echo
-        echo "  sudo apt install timeshift"
+        echo "sudo apt install timeshift"
         pause
         return
     fi
 
-    echo "Este servidor está diseñado para funcionar sin entorno gráfico."
-    echo
-    echo "Si existe un DISPLAY disponible, se intentará iniciar"
-    echo "la interfaz gráfica de Timeshift."
+    echo "Ubuntu Server normalmente no tiene entorno gráfico."
     echo
 
     read -r -u "$TTY_FD" -p \
-        "¿Iniciar timeshift-gtk? [s/N]: " answer
+        "¿Intentar iniciar timeshift-gtk? [s/N]: " answer
 
     if [[ ! "$answer" =~ ^[SsYy]$ ]]; then
-        echo
         echo "Operación cancelada."
         pause
         return
     fi
 
-    echo
-
     timeshift-gtk
-
-    result=$?
-
-    echo
-
-    if [[ "$result" -ne 0 ]]; then
-        echo "No se pudo iniciar la interfaz gráfica."
-        echo
-        echo "En Ubuntu Server sin GUI esto es normal."
-        echo "La administración por consola continúa disponible."
-    fi
 
     pause
 }
 
 # ============================================================
-# MENÚ PRINCIPAL
+# MENÚ
 # ============================================================
 
 main_menu() {
@@ -597,20 +645,22 @@ main_menu() {
         echo "  2) Ver versión"
         echo "  3) Ver dispositivos"
         echo "  4) Ver snapshots"
-        echo "  5) Crear snapshot"
+        echo "  5) Crear snapshot RSYNC"
         echo "  6) Restaurar snapshot"
         echo "  7) Eliminar snapshot"
         echo "  8) Ver configuración"
         echo "  9) Ver espacio y discos"
         echo " 10) Información del sistema"
-        echo " 11) Abrir interfaz gráfica"
+        echo " 11) Ver exclusión de modelos Ollama"
+        echo " 12) Abrir interfaz gráfica"
         echo
         echo "  0) Salir"
         echo
         echo "============================================================"
         echo
 
-        read -r -u "$TTY_FD" -p "Selecciona una opción: " option
+        read -r -u "$TTY_FD" -p \
+            "Selecciona una opción: " option
 
         case "$option" in
 
@@ -647,7 +697,7 @@ main_menu() {
                 ;;
 
             9)
-                show_disk_space
+                show_space
                 ;;
 
             10)
@@ -655,6 +705,10 @@ main_menu() {
                 ;;
 
             11)
+                configure_ollama_exclusion
+                ;;
+
+            12)
                 launch_gui
                 ;;
 
@@ -682,3 +736,4 @@ main_menu() {
 require_root
 setup_tty
 main_menu
+
