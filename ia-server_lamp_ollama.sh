@@ -1463,6 +1463,7 @@ dns_install() {
 
     if (( !DRY_RUN )); then
         cat >"$DNSMASQ_CONF" <<DNS
+cat >"$DNSMASQ_CONF" <<DNS
 # ============================================================================
 # IA-SERVER dnsmasq
 # Gestionado por ${SCRIPT_NAME}
@@ -1489,13 +1490,13 @@ server=${DNS_UPSTREAM_2}
 conf-file=${DNSMASQ_RECORDS}
 DNS
 
-        if [[ ! -f "$DNSMASQ_RECORDS" ]]; then
-            cat >"$DNSMASQ_RECORDS" <<DNS
+if [[ ! -f "$DNSMASQ_RECORDS" ]]; then
+    cat >"$DNSMASQ_RECORDS" <<DNS
 # Registros locales IA-SERVER
 # Formato:
 # address=/dominio/IP
 DNS
-        fi
+fi
     fi
 
     run dnsmasq --test
