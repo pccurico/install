@@ -1,75 +1,133 @@
 #!/usr/bin/env bash
-
-# ============================================================
-# IA-SERVER
+# ============================================================================
+# IA-SERVER Professional Admin Installer
 # PCCURICO SPA
+#
 # Ubuntu Server 24.04 LTS
+# Version: 3.1.0
 #
-# Instalador LAMP + IA
-#
-# Versión: 2.1.0
+# Instalador + administrador + diagnóstico + reparación
 #
 # Componentes:
-#   Apache2
-#   PHP 8.3
-#   PHP-FPM
+#   Apache 2
+#   PHP 8.3 + PHP-FPM
 #   MySQL
 #   phpMyAdmin
-#   Node.js 24 LTS
+#   Node.js 24
 #   OmniRoute
 #   Ollama
 #   llmfit
+#   Samba
+#   dnsmasq
 #   UFW
-#   SSH
+#   fail2ban
+#   Certbot
+#   swap
+#   sysctl/journald
 #
-# Ejecución:
+# Características:
+#   - Instalación idempotente
+#   - Configuración persistente
+#   - Estado persistente
+#   - Backup automático
+#   - DNS local
+#   - Gestión de VirtualHosts
+#   - Bind configurable para OmniRoute/Ollama
+#   - Firewall basado en exposición
+#   - Samba /var/www
+#   - Diagnóstico
+#   - Pruebas de integración
+#   - Reparación
+#   - Dry-run
 #
-#   sudo bash ia-server_lamp_ollama.sh
-#
-#   curl -fsSL https://raw.githubusercontent.com/pccurico/install/refs/heads/master/ia-server_lamp_ollama.sh | sudo bash
-#
-# Instalación automática:
-#
-#   sudo bash ia-server_lamp_ollama.sh --install
-#
-# ============================================================
-
+# ============================================================================
 set -Eeuo pipefail
+IFS=$'\n\t'
 
 SCRIPT_NAME="ia-server_lamp_ollama.sh"
-SCRIPT_VERSION="2.1.0"
+SCRIPT_VERSION="3.1.0"
 
-LOG_FILE="/var/log/ia-server/install.log"
-STATE_DIR="/var/lib/ia-server"
+# ---------------------------------------------------------------------------
+# Directorios
+# ---------------------------------------------------------------------------
+LOG_DIR="/var/log/ia-server"
+LOG_FILE="${LOG_DIR}/install.log"
+
 CONFIG_DIR="/etc/ia-server"
+CONFIG_FILE="${CONFIG_DIR}/ia-server.conf"
+MANAGED_DIR="${CONFIG_DIR}/managed"
 
+STATE_DIR="/var/lib/ia-server"
+STATE_COMPONENTS="${STATE_DIR}/components"
+STATE_DIRTY="${STATE_DIR}/dirty"
+
+BACKUP_DIR="/var/backups/ia-server"
+
+# ---------------------------------------------------------------------------
+# Software / versiones
+# ---------------------------------------------------------------------------
 PHP_VERSION="8.3"
 NODE_MAJOR="24"
 
 OMNI_PORT="20128"
 OLLAMA_PORT="11434"
 
-OLLAMA_HOST_DEFAULT="127.0.0.1"
-OLLAMA_CONTEXT_LENGTH="32768"
+OMNI_BIND="0.0.0.0"
+OLLAMA_BIND="127.0.0.1"
+
+OLLAMA_CONTEXT_LENGTH="163840"
 OLLAMA_KEEP_ALIVE="10m"
 
 OMNI_USER="omniroute"
 OMNI_GROUP="omniroute"
 OMNI_HOME="/var/lib/omniroute"
 
+# ---------------------------------------------------------------------------
+# Sistema
+# ---------------------------------------------------------------------------
+HOSTNAME_DEFAULT="ia-server"
 TIMEZONE="America/Santiago"
 
+# ---------------------------------------------------------------------------
+# Samba
+# ---------------------------------------------------------------------------
+SAMBA_SHARE_NAME="www"
+SAMBA_SHARE_PATH="/var/www"
+
+# ---------------------------------------------------------------------------
+# DNS
+# ---------------------------------------------------------------------------
+DNSMASQ_CONF="/etc/dnsmasq.d/ia-server.conf"
+DNSMASQ_RECORDS="/etc/dnsmasq.d/ia-server-vhosts.conf"
+
+LOCAL_DOMAIN="home.pccontrolhub.arpa"
+
+DNS_UPSTREAM_1="1.1.1.1"
+DNS_UPSTREAM_2="8.8.8.8"
+
+# ---------------------------------------------------------------------------
+# Red
+# ---------------------------------------------------------------------------
+LAN_IP=""
+LAN_IFACE=""
+LAN_CIDR=""
+GATEWAY=""
+
+# ---------------------------------------------------------------------------
+# Configuración
+# ---------------------------------------------------------------------------
+DRY_RUN=0
 TTY_FD=0
 
-# ============================================================
-# COLORES
-# ============================================================
-
+# ---------------------------------------------------------------------------
+# Colores
+# ---------------------------------------------------------------------------
 if [[ -t 1 ]]; then
     RED='\033[0;31m'
     GREEN='\033[0;32m'
     YELLOW='\033[1;33m'
     BLUE='\033[0;34m'
+    MAGENTA='\033[0;35m'
     CYAN='\033[0;36m'
     WHITE='\033[1;37m'
     GRAY='\033[0;90m'
@@ -79,100 +137,81 @@ else
     GREEN=''
     YELLOW=''
     BLUE=''
+    MAGENTA=''
     CYAN=''
     WHITE=''
     GRAY=''
     NC=''
 fi
 
-# ============================================================
-# LOG
-# ============================================================
-
-prepare_logging() {
-
-    mkdir -p "$(dirname "$LOG_FILE")"
-    touch "$LOG_FILE"
-
-    chmod 640 "$LOG_FILE"
-}
+# ============================================================================
+# LOGGING
+# ============================================================================
 
 log() {
-
-    local message="$*"
-
-    printf '[%s] %s\n' \
-        "$(date '+%Y-%m-%d %H:%M:%S')" \
-        "$message" >> "$LOG_FILE"
+    mkdir -p "$LOG_DIR" 2>/dev/null || true
+    printf '[%s] %s\n' "$(date '+%F %T')" "$*" >>"$LOG_FILE" 2>/dev/null || true
 }
 
 info() {
-
     echo -e "${CYAN}[INFO]${NC} $*"
-    log "[INFO] $*"
+    log "INFO $*"
 }
 
-success() {
-
+ok() {
     echo -e "${GREEN}[OK]${NC} $*"
-    log "[OK] $*"
+    log "OK $*"
 }
 
-warning() {
-
+warn() {
     echo -e "${YELLOW}[AVISO]${NC} $*"
-    log "[AVISO] $*"
+    log "WARN $*"
 }
 
-error() {
-
+err() {
     echo -e "${RED}[ERROR]${NC} $*" >&2
-    log "[ERROR] $*"
+    log "ERROR $*"
 }
 
-# ============================================================
-# ERROR HANDLER
-# ============================================================
-
-on_error() {
-
-    local line="${1:-unknown}"
-    local code="${2:-1}"
-    local command="${3:-unknown}"
-
-    echo
-    echo -e "${RED}============================================================${NC}"
-    echo -e "${RED}ERROR EN IA-SERVER${NC}"
-    echo -e "${RED}============================================================${NC}"
-    echo
-    echo "Línea      : $line"
-    echo "Código     : $code"
-    echo "Comando    : $command"
-    echo "Log        : $LOG_FILE"
-    echo
-
-    log "ERROR line=$line code=$code command=$command"
-
-    return "$code"
+debug() {
+    log "DEBUG $*"
 }
 
-trap 'on_error "$LINENO" "$?" "$BASH_COMMAND"' ERR
+run() {
+    if (( DRY_RUN )); then
+        printf '%s[DRY-RUN]%s ' "$YELLOW" "$NC"
+        printf '%q ' "$@"
+        echo
+        return 0
+    fi
 
-# ============================================================
-# TERMINAL
-# ============================================================
+    "$@"
+}
 
-setup_terminal() {
+run_shell() {
+    if (( DRY_RUN )); then
+        printf '%s[DRY-RUN]%s %s\n' "$YELLOW" "$NC" "$*"
+        return 0
+    fi
 
-    # Cuando el script se ejecuta mediante:
-    #
-    # curl URL | sudo bash
-    #
-    # stdin pertenece al pipe de curl.
-    #
-    # Se utiliza /dev/tty para que los menús continúen siendo
-    # interactivos.
+    bash -c "$*"
+}
 
+trap 'rc=$?; err "Fallo línea $LINENO (rc=$rc): $BASH_COMMAND"; exit "$rc"' ERR
+
+# ============================================================================
+# UTILIDADES
+# ============================================================================
+
+require_root() {
+    if [[ $EUID -ne 0 ]]; then
+        echo "Ejecuta como root:"
+        echo "sudo bash ${SCRIPT_NAME}"
+        exit 1
+    fi
+}
+
+setup_tty() {
     if [[ -r /dev/tty ]]; then
         exec 3</dev/tty
         TTY_FD=3
@@ -181,212 +220,270 @@ setup_terminal() {
     fi
 }
 
-read_input() {
-
+ask() {
     local prompt="$1"
-    local result_var="$2"
+    local variable="$2"
     local value=""
 
-    if ! read -r -u "$TTY_FD" -p "$prompt" value; then
-        return 1
-    fi
-
-    printf -v "$result_var" '%s' "$value"
+    read -r -u "$TTY_FD" -p "$prompt" value || return 1
+    printf -v "$variable" '%s' "$value"
 }
 
-read_secret() {
-
+secret() {
     local prompt="$1"
-    local result_var="$2"
+    local variable="$2"
     local value=""
 
-    if ! read -r -u "$TTY_FD" -s -p "$prompt" value; then
+    read -r -u "$TTY_FD" -s -p "$prompt" value || {
         echo
         return 1
-    fi
+    }
 
     echo
-
-    printf -v "$result_var" '%s' "$value"
+    printf -v "$variable" '%s' "$value"
 }
 
-pause_screen() {
-
-    local dummy=""
-
-    echo
-    read -r -u "$TTY_FD" -p "Presiona ENTER para continuar..." dummy || true
-}
-
-confirm() {
-
-    local question="$1"
+yesno() {
     local answer=""
 
-    read -r -u "$TTY_FD" -p "$question [s/N]: " answer || return 1
+    read -r -u "$TTY_FD" -p "$1 [s/N]: " answer || return 1
 
-    case "${answer,,}" in
-        s|si|sí|y|yes)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
+    [[ "${answer,,}" =~ ^(s|si|sí|y|yes)$ ]]
 }
 
-# ============================================================
-# VALIDACIONES
-# ============================================================
-
-validate_mysql_identifier() {
-
-    local value="$1"
-
-    [[ "$value" =~ ^[a-zA-Z0-9_$.-]+$ ]]
+pause() {
+    local value=""
+    echo
+    read -r -u "$TTY_FD" -p "ENTER para continuar..." value || true
 }
 
-validate_mysql_host() {
-
-    local value="$1"
-
-    [[ "$value" =~ ^[a-zA-Z0-9_%:.+-]+$ ]]
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
 }
 
-# ============================================================
-# ROOT
-# ============================================================
+service_exists() {
+    systemctl list-unit-files "$1" >/dev/null 2>&1
+}
 
-require_root() {
+service_active() {
+    systemctl is-active --quiet "$1"
+}
 
-    if [[ "${EUID}" -ne 0 ]]; then
+is_installed_pkg() {
+    dpkg-query -W -f='${Status}' "$1" 2>/dev/null |
+        grep -q 'install ok installed'
+}
 
-        echo -e "${RED}Este instalador debe ejecutarse como root.${NC}"
-        echo
-        echo "Ejemplo:"
-        echo
-        echo "  curl -fsSL https://raw.githubusercontent.com/pccurico/install/refs/heads/master/ia-server_lamp_ollama.sh | sudo bash"
-        echo
+mark_component() {
+    local component="$1"
 
-        exit 1
+    if (( !DRY_RUN )); then
+        mkdir -p "$STATE_COMPONENTS"
+        printf '%s\n' "$(date '+%F %T')" >"${STATE_COMPONENTS}/${component}"
     fi
 }
 
-# ============================================================
-# SISTEMA OPERATIVO
-# ============================================================
+component_done() {
+    [[ -f "${STATE_COMPONENTS}/${1}" ]]
+}
+
+valid_domain() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]]
+}
+
+ident() {
+    [[ "$1" =~ ^[A-Za-z0-9_.-]+$ ]]
+}
+
+sqlq() {
+    local x="$1"
+    x=${x//\\/\\\\}
+    x=${x//\'/\'\'}
+    printf '%s' "$x"
+}
+
+# ============================================================================
+# SISTEMA
+# ============================================================================
 
 check_os() {
-
-    if [[ ! -f /etc/os-release ]]; then
-
-        error "No se pudo determinar el sistema operativo."
-
-        exit 1
-    fi
-
-    # shellcheck disable=SC1091
     source /etc/os-release
 
-    if [[ "${ID:-}" != "ubuntu" ]]; then
-
-        error "Este instalador requiere Ubuntu."
-        error "Sistema detectado: ${PRETTY_NAME:-desconocido}"
-
+    if [[ "${ID:-}" != "ubuntu" || "${VERSION_ID:-}" != "24.04" ]]; then
+        err "Se requiere Ubuntu 24.04 LTS."
+        err "Sistema detectado: ${PRETTY_NAME:-N/D}"
         exit 1
     fi
 
-    if [[ "${VERSION_ID:-}" != "24.04" ]]; then
+    ok "${PRETTY_NAME}"
+}
 
-        error "Este instalador está diseñado para Ubuntu Server 24.04 LTS."
-        error "Sistema detectado: ${PRETTY_NAME:-desconocido}"
+prepare() {
+    run mkdir -p \
+        "$CONFIG_DIR" \
+        "$MANAGED_DIR" \
+        "$STATE_DIR" \
+        "$STATE_COMPONENTS" \
+        "$BACKUP_DIR" \
+        "$LOG_DIR"
 
-        exit 1
+    run touch "$LOG_FILE"
+
+    run chmod 750 \
+        "$CONFIG_DIR" \
+        "$STATE_DIR" \
+        "$BACKUP_DIR"
+
+    run chmod 640 "$LOG_FILE"
+}
+
+load_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        # shellcheck disable=SC1090
+        source "$CONFIG_FILE"
+        debug "Configuración cargada desde $CONFIG_FILE"
+    fi
+}
+
+save_config() {
+    if (( DRY_RUN )); then
+        info "DRY-RUN: no se modifica $CONFIG_FILE"
+        return 0
     fi
 
-    success "Sistema operativo: Ubuntu Server 24.04 LTS"
+    cat >"$CONFIG_FILE" <<CFG
+# IA-SERVER configuration
+# Generated by ${SCRIPT_NAME} ${SCRIPT_VERSION}
+
+PHP_VERSION="$PHP_VERSION"
+NODE_MAJOR="$NODE_MAJOR"
+
+OMNI_PORT="$OMNI_PORT"
+OLLAMA_PORT="$OLLAMA_PORT"
+
+OMNI_BIND="$OMNI_BIND"
+OLLAMA_BIND="$OLLAMA_BIND"
+
+OLLAMA_CONTEXT_LENGTH="$OLLAMA_CONTEXT_LENGTH"
+OLLAMA_KEEP_ALIVE="$OLLAMA_KEEP_ALIVE"
+
+HOSTNAME_DEFAULT="$HOSTNAME_DEFAULT"
+TIMEZONE="$TIMEZONE"
+
+SAMBA_SHARE_NAME="$SAMBA_SHARE_NAME"
+SAMBA_SHARE_PATH="$SAMBA_SHARE_PATH"
+
+LOCAL_DOMAIN="$LOCAL_DOMAIN"
+
+DNS_UPSTREAM_1="$DNS_UPSTREAM_1"
+DNS_UPSTREAM_2="$DNS_UPSTREAM_2"
+CFG
+
+    chmod 640 "$CONFIG_FILE"
 }
 
-# ============================================================
-# DIRECTORIOS
-# ============================================================
+# ============================================================================
+# RED
+# ============================================================================
 
-prepare_directories() {
+net_detect() {
+    local route_info=""
 
-    mkdir -p "$STATE_DIR"
-    mkdir -p "$CONFIG_DIR"
-    mkdir -p "$(dirname "$LOG_FILE")"
+    route_info="$(ip -4 route get 1.1.1.1 2>/dev/null || true)"
 
-    touch "$LOG_FILE"
+    LAN_IP="$(
+        awk '
+            /src/ {
+                for (i=1; i<=NF; i++) {
+                    if ($i=="src") {
+                        print $(i+1)
+                        exit
+                    }
+                }
+            }
+        ' <<<"$route_info"
+    )"
 
-    chmod 750 "$STATE_DIR"
-    chmod 750 "$CONFIG_DIR"
-    chmod 640 "$LOG_FILE"
+    LAN_IFACE="$(
+        awk '
+            /dev/ {
+                for (i=1; i<=NF; i++) {
+                    if ($i=="dev") {
+                        print $(i+1)
+                        exit
+                    }
+                }
+            }
+        ' <<<"$route_info"
+    )"
 
-    success "Directorios del sistema preparados."
-}
+    GATEWAY="$(
+        ip route show default 2>/dev/null |
+            awk '/default/ {print $3; exit}' ||
+            true
+    )"
 
-# ============================================================
-# HOSTNAME / TIMEZONE
-# ============================================================
-
-configure_system_identity() {
-
-    if [[ "$(hostname)" != "ia-server" ]]; then
-
-        if confirm "¿Configurar hostname como ia-server?"; then
-
-            hostnamectl set-hostname ia-server
-
-            success "Hostname configurado: ia-server"
-        fi
-
-    else
-
-        success "Hostname: ia-server"
+    if [[ -z "$LAN_IP" ]]; then
+        LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
     fi
 
-    timedatectl set-timezone "$TIMEZONE" 2>/dev/null || true
+    if [[ -z "$LAN_IFACE" && -n "$LAN_IP" ]]; then
+        LAN_IFACE="$(
+            ip -4 -o addr show 2>/dev/null |
+                awk -v ip="$LAN_IP" '$4 ~ "^" ip "/" {print $2; exit}' ||
+                true
+        )"
+    fi
 
-    success "Zona horaria: $TIMEZONE"
+    if [[ -n "$LAN_IFACE" ]]; then
+        LAN_CIDR="$(
+            ip -4 -o addr show dev "$LAN_IFACE" 2>/dev/null |
+                awk -v ip="$LAN_IP" '$4 ~ "^" ip "/" {print $4; exit}' ||
+                true
+        )"
+    fi
+
+    if [[ -z "$LAN_CIDR" && -n "$LAN_IP" ]]; then
+        LAN_CIDR="${LAN_IP}/24"
+    fi
 }
 
-# ============================================================
+show_network() {
+    net_detect
+
+    echo
+    echo "================ RED ================"
+    printf 'Hostname : %s\n' "$(hostname)"
+    printf 'IP       : %s\n' "${LAN_IP:-N/D}"
+    printf 'Interfaz : %s\n' "${LAN_IFACE:-N/D}"
+    printf 'CIDR     : %s\n' "${LAN_CIDR:-N/D}"
+    printf 'Gateway  : %s\n' "${GATEWAY:-N/D}"
+    echo
+}
+
+# ============================================================================
 # APT
-# ============================================================
+# ============================================================================
 
-apt_update() {
-
+apt_prepare() {
     export DEBIAN_FRONTEND=noninteractive
 
-    apt-get update
-
-    success "Índices APT actualizados."
+    run apt-get update
 }
 
-apt_upgrade() {
-
+apt_install() {
     export DEBIAN_FRONTEND=noninteractive
 
-    apt-get upgrade -y
-
-    success "Sistema actualizado."
+    run apt-get update
+    run apt-get install -y "$@"
 }
 
-# ============================================================
-# PREPARACIÓN
-# ============================================================
+# ============================================================================
+# BASE
+# ============================================================================
 
-install_base_packages() {
-
-    info "Preparando Ubuntu Server..."
-
-    export DEBIAN_FRONTEND=noninteractive
-
-    apt-get update
-
-    apt-get install -y \
-        apt-transport-https \
+base_install() {
+    apt_install \
         ca-certificates \
         curl \
         wget \
@@ -407,77 +504,181 @@ install_base_packages() {
         net-tools \
         iproute2 \
         dnsutils \
+        bind9-dnsutils \
         pciutils \
         usbutils \
         lsof \
         procps \
+        psmisc \
         openssh-server \
         ufw \
         fail2ban \
         cron \
         build-essential \
-        pkg-config
+        pkg-config \
+        acl \
+        attr \
+        ncdu \
+        iotop \
+        nload \
+        sysstat \
+        smartmontools \
+        unattended-upgrades \
+        apt-listchanges \
+        ca-certificates \
+        openssl
 
-    systemctl enable --now ssh
-    systemctl enable --now cron
+    run systemctl enable --now ssh
+    run systemctl enable --now cron
 
-    success "Paquetes base instalados."
+    ok "Herramientas base instaladas."
+    mark_component base
 }
 
-# ============================================================
-# APACHE
-# ============================================================
+identity() {
+    net_detect
 
-install_apache() {
-
-    info "Instalando Apache2..."
-
-    export DEBIAN_FRONTEND=noninteractive
-
-    apt-get update
-
-    apt-get install -y \
-        apache2 \
-        apache2-utils
-
-    a2enmod rewrite
-    a2enmod headers
-    a2enmod ssl
-    a2enmod proxy
-    a2enmod proxy_http
-    a2enmod proxy_fcgi
-    a2enmod setenvif
-    a2enmod expires
-    a2enmod deflate
-
-    systemctl enable apache2
-    systemctl restart apache2
-
-    if systemctl is-active --quiet apache2; then
-
-        success "Apache2 activo."
-
-    else
-
-        error "Apache2 no quedó activo."
-
-        return 1
+    if [[ "$(hostname)" != "$HOSTNAME_DEFAULT" ]]; then
+        if yesno "¿Cambiar hostname a $HOSTNAME_DEFAULT?"; then
+            run hostnamectl set-hostname "$HOSTNAME_DEFAULT"
+        fi
     fi
+
+    run timedatectl set-timezone "$TIMEZONE"
+
+    save_config
+
+    ok "Host=$(hostname) IP=${LAN_IP:-N/D} IF=${LAN_IFACE:-N/D} LAN=${LAN_CIDR:-N/D} GW=${GATEWAY:-N/D}"
+    mark_component identity
 }
 
-# ============================================================
-# PHP 8.3
-# ============================================================
+# ============================================================================
+# APACHE
+# ============================================================================
 
-install_php_versions() {
+apache_install() {
+    apt_install apache2 apache2-utils
 
-    info "Instalando PHP ${PHP_VERSION}..."
+    for module in \
+        rewrite \
+        headers \
+        ssl \
+        proxy \
+        proxy_http \
+        proxy_fcgi \
+        setenvif \
+        expires \
+        deflate \
+        env \
+        http2 \
+        status
+    do
+        run a2enmod "$module"
+    done
 
-    export DEBIAN_FRONTEND=noninteractive
+    run a2dissite 000-default.conf || true
+    run systemctl enable --now apache2
 
-    apt-get update
+    run apache2ctl configtest
+    run systemctl reload apache2
 
-    apt-get install -y \
+    ok "Apache2 operativo."
+    mark_component apache
+}
+
+vhost_create() {
+    local domain=""
+    local root=""
+    local aliases=""
+    local file=""
+
+    ask "Dominio: " domain
+
+    valid_domain "$domain" || {
+        err "Dominio inválido."
+        return 1
+    }
+
+    ask "DocumentRoot [/var/www/$domain]: " root
+    root="${root:-/var/www/$domain}"
+
+    ask "Aliases separados por espacio: " aliases
+
+    file="${domain//[^A-Za-z0-9._-]/_}.conf"
+
+    run mkdir -p "$root"
+    run chown -R www-data:www-data "$root"
+
+    if (( !DRY_RUN )); then
+        {
+            echo "<VirtualHost *:80>"
+            echo "    ServerName $domain"
+
+            for alias in $aliases; do
+                valid_domain "$alias" || continue
+                echo "    ServerAlias $alias"
+            done
+
+            echo "    DocumentRoot $root"
+            echo
+            echo "    <Directory $root>"
+            echo "        Options FollowSymLinks"
+            echo "        AllowOverride All"
+            echo "        Require all granted"
+            echo "    </Directory>"
+            echo
+            echo "    DirectoryIndex index.php index.html index.htm"
+            echo "    ErrorLog \${APACHE_LOG_DIR}/${domain}_error.log"
+            echo "    CustomLog \${APACHE_LOG_DIR}/${domain}_access.log combined"
+            echo "</VirtualHost>"
+        } >"/etc/apache2/sites-available/$file"
+    fi
+
+    run a2ensite "$file"
+    run apache2ctl configtest
+    run systemctl reload apache2
+
+    net_detect
+
+    dns_record "$domain" "${LAN_IP:-127.0.0.1}"
+
+    for alias in $aliases; do
+        dns_record "$alias" "${LAN_IP:-127.0.0.1}"
+    done
+
+    ok "VHost $domain -> $root"
+}
+
+vhost_disable() {
+    local domain=""
+    ask "Dominio: " domain
+
+    valid_domain "$domain" || {
+        err "Dominio inválido."
+        return 1
+    }
+
+    local file="${domain//[^A-Za-z0-9._-]/_}.conf"
+
+    run a2dissite "$file" || true
+    run apache2ctl configtest
+    run systemctl reload apache2
+
+    ok "VHost deshabilitado: $domain"
+}
+
+vhost_list() {
+    echo
+    echo "================ APACHE VHOSTS ================"
+    apache2ctl -S 2>&1 || true
+}
+
+# ============================================================================
+# PHP
+# ============================================================================
+
+php_install() {
+    apt_install \
         "php${PHP_VERSION}" \
         "php${PHP_VERSION}-cli" \
         "php${PHP_VERSION}-common" \
@@ -494,1022 +695,361 @@ install_php_versions() {
         "php${PHP_VERSION}-readline" \
         "php${PHP_VERSION}-opcache"
 
-    systemctl enable --now "php${PHP_VERSION}-fpm"
+    run systemctl enable --now "php${PHP_VERSION}-fpm"
 
-    a2enmod proxy_fcgi
-    a2enconf "php${PHP_VERSION}-fpm"
+    run a2enconf "php${PHP_VERSION}-fpm"
 
-    update-alternatives \
-        --install /usr/bin/php php "/usr/bin/php${PHP_VERSION}" 83
+    run update-alternatives \
+        --install \
+        /usr/bin/php \
+        php \
+        "/usr/bin/php${PHP_VERSION}" \
+        83
 
-    update-alternatives \
-        --set php "/usr/bin/php${PHP_VERSION}"
+    run update-alternatives \
+        --set \
+        php \
+        "/usr/bin/php${PHP_VERSION}"
 
-    systemctl restart apache2
-    systemctl restart "php${PHP_VERSION}-fpm"
+    if (( !DRY_RUN )); then
+        mkdir -p "/etc/php/${PHP_VERSION}/fpm/conf.d"
 
-    php -v
+        cat >"/etc/php/${PHP_VERSION}/fpm/conf.d/99-ia-server.ini" <<'INI'
+memory_limit=512M
+upload_max_filesize=128M
+post_max_size=128M
+max_execution_time=120
+max_input_vars=5000
 
-    success "PHP ${PHP_VERSION} instalado y configurado."
+opcache.enable=1
+opcache.memory_consumption=192
+opcache.interned_strings_buffer=16
+opcache.max_accelerated_files=20000
+opcache.validate_timestamps=1
+INI
+    fi
+
+    run systemctl restart "php${PHP_VERSION}-fpm"
+    run systemctl reload apache2
+
+    ok "PHP ${PHP_VERSION} operativo."
+    mark_component php
 }
 
-# ============================================================
+# ============================================================================
 # MYSQL
-# ============================================================
+# ============================================================================
 
-install_mysql() {
+mysql_install() {
+    apt_install mysql-server mysql-client
 
-    info "Instalando MySQL..."
+    run systemctl enable --now mysql
 
-    export DEBIAN_FRONTEND=noninteractive
-
-    apt-get update
-
-    apt-get install -y \
-        mysql-server \
-        mysql-client
-
-    systemctl enable mysql
-    systemctl restart mysql
-
-    if systemctl is-active --quiet mysql; then
-
-        success "MySQL activo."
-
-    else
-
-        error "MySQL no quedó activo."
-
-        return 1
+    if (( !DRY_RUN )); then
+        mysql --protocol=socket -uroot -e 'SELECT 1' >/dev/null
     fi
 
-    mysql --version
+    ok "MySQL operativo."
+    mark_component mysql
 }
 
-# ============================================================
-# MYSQL - CREAR BASE DE DATOS
-# ============================================================
+mysql_db() {
+    local db=""
 
-mysql_create_database() {
+    ask "Base de datos: " db
 
-    local db_name=""
-
-    echo
-    echo "============================================================"
-    echo " CREAR BASE DE DATOS MYSQL"
-    echo "============================================================"
-    echo
-
-    read_input "Nombre de la BD: " db_name
-
-    if [[ -z "$db_name" ]]; then
-
-        error "El nombre de la BD es obligatorio."
-
+    ident "$db" || {
+        err "Nombre inválido."
         return 1
+    }
+
+    if (( !DRY_RUN )); then
+        mysql -uroot -e \
+            "CREATE DATABASE IF NOT EXISTS \`$db\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
     fi
 
-    if ! validate_mysql_identifier "$db_name"; then
-
-        error "Nombre de BD inválido."
-        error "Utiliza solamente letras, números, _, -, . o \$."
-
-        return 1
-    fi
-
-    mysql --protocol=socket -uroot <<SQL
-CREATE DATABASE IF NOT EXISTS \`${db_name}\`
-CHARACTER SET utf8mb4
-COLLATE utf8mb4_unicode_ci;
-SQL
-
-    success "Base de datos creada/verificada: ${db_name}"
+    ok "BD $db creada/verificada."
 }
 
-# ============================================================
-# MYSQL - CREAR USUARIO
-# ============================================================
+mysql_user() {
+    local u=""
+    local h="localhost"
+    local p=""
+    local q=""
 
-mysql_create_user() {
-
-    local db_user=""
-    local db_host=""
-    local db_password=""
-    local grant_mode=""
-    local grant_database=""
-
-    echo
-    echo "============================================================"
-    echo " CREAR USUARIO MYSQL"
-    echo "============================================================"
-    echo
-    echo "El usuario puede crearse sin crear ninguna base de datos."
-    echo
-
-    read_input "Usuario MySQL: " db_user
-
-    if [[ -z "$db_user" ]]; then
-
-        error "El usuario es obligatorio."
-
+    ask "Usuario: " u
+    ident "$u" || {
+        err "Usuario inválido."
         return 1
-    fi
+    }
 
-    if ! validate_mysql_identifier "$db_user"; then
+    ask "Host [localhost]: " h
+    h="${h:-localhost}"
 
-        error "Nombre de usuario inválido."
+    secret "Contraseña: " p
 
+    [[ -n "$p" ]] || {
+        err "Contraseña vacía."
         return 1
-    fi
+    }
 
-    read_input "Host [localhost]: " db_host
+    q="$(sqlq "$p")"
 
-    if [[ -z "$db_host" ]]; then
-        db_host="localhost"
-    fi
-
-    if ! validate_mysql_host "$db_host"; then
-
-        error "Host MySQL inválido."
-
-        return 1
-    fi
-
-    read_secret "Contraseña: " db_password
-
-    if [[ -z "$db_password" ]]; then
-
-        error "La contraseña no puede estar vacía."
-
-        return 1
-    fi
-
-    echo
-    echo "Privilegios iniciales:"
-    echo
-    echo "  1) Sin privilegios"
-    echo "  2) ALL PRIVILEGES sobre una BD"
-    echo "  3) ALL PRIVILEGES sobre todas las BD"
-    echo
-
-    read_input "Selecciona [1]: " grant_mode
-
-    if [[ -z "$grant_mode" ]]; then
-        grant_mode="1"
-    fi
-
-    case "$grant_mode" in
-
-        1)
-
-            MYSQL_PWD="$db_password" \
-                mysql --protocol=socket -uroot <<SQL
-CREATE USER IF NOT EXISTS '${db_user}'@'${db_host}'
-IDENTIFIED BY '${db_password}';
-
-ALTER USER '${db_user}'@'${db_host}'
-IDENTIFIED BY '${db_password}';
-
+    if (( !DRY_RUN )); then
+        mysql -uroot <<SQL
+CREATE USER IF NOT EXISTS '$(sqlq "$u")'@'$(sqlq "$h")' IDENTIFIED BY '$q';
+ALTER USER '$(sqlq "$u")'@'$(sqlq "$h")' IDENTIFIED BY '$q';
 FLUSH PRIVILEGES;
 SQL
+    fi
 
-            success "Usuario creado sin privilegios: ${db_user}@${db_host}"
-            ;;
-
-        2)
-
-            read_input "Nombre de la BD a administrar: " grant_database
-
-            if [[ -z "$grant_database" ]]; then
-
-                error "Debes indicar la BD."
-
-                return 1
-            fi
-
-            if ! validate_mysql_identifier "$grant_database"; then
-
-                error "Nombre de BD inválido."
-
-                return 1
-            fi
-
-            MYSQL_PWD="$db_password" \
-                mysql --protocol=socket -uroot <<SQL
-CREATE USER IF NOT EXISTS '${db_user}'@'${db_host}'
-IDENTIFIED BY '${db_password}';
-
-ALTER USER '${db_user}'@'${db_host}'
-IDENTIFIED BY '${db_password}';
-
-GRANT ALL PRIVILEGES ON \`${grant_database}\`.* TO '${db_user}'@'${db_host}';
-
-FLUSH PRIVILEGES;
-SQL
-
-            success "Usuario creado: ${db_user}@${db_host}"
-            success "ALL PRIVILEGES sobre: ${grant_database}.*"
-            ;;
-
-        3)
-
-            MYSQL_PWD="$db_password" \
-                mysql --protocol=socket -uroot <<SQL
-CREATE USER IF NOT EXISTS '${db_user}'@'${db_host}'
-IDENTIFIED BY '${db_password}';
-
-ALTER USER '${db_user}'@'${db_host}'
-IDENTIFIED BY '${db_password}';
-
-GRANT ALL PRIVILEGES ON *.* TO '${db_user}'@'${db_host}' WITH GRANT OPTION;
-
-FLUSH PRIVILEGES;
-SQL
-
-            success "Usuario creado: ${db_user}@${db_host}"
-            success "ALL PRIVILEGES sobre todas las bases de datos."
-            success "WITH GRANT OPTION habilitado."
-            ;;
-
-        *)
-
-            error "Opción de privilegios no válida."
-
-            return 1
-            ;;
-
-    esac
+    ok "Usuario $u@$h configurado."
 }
 
-# ============================================================
-# MYSQL - CREAR BD + USUARIO
-# ============================================================
+mysql_db_user() {
+    local db=""
+    local u=""
+    local h="localhost"
+    local p=""
+    local q=""
 
-mysql_create_database_and_user() {
+    ask "BD: " db
+    ask "Usuario: " u
+    ask "Host [localhost]: " h
 
-    local db_name=""
-    local db_user=""
-    local db_host=""
-    local db_password=""
+    h="${h:-localhost}"
 
-    echo
-    echo "============================================================"
-    echo " CREAR BD + USUARIO MYSQL"
-    echo "============================================================"
-    echo
+    secret "Contraseña: " p
 
-    read_input "Nombre de la BD: " db_name
-
-    if [[ -z "$db_name" ]]; then
-        error "La BD es obligatoria."
+    ident "$db" && ident "$u" || {
+        err "BD/usuario inválido."
         return 1
-    fi
+    }
 
-    if ! validate_mysql_identifier "$db_name"; then
-        error "Nombre de BD inválido."
-        return 1
-    fi
+    q="$(sqlq "$p")"
 
-    read_input "Usuario MySQL: " db_user
+    if (( !DRY_RUN )); then
+        mysql -uroot <<SQL
+CREATE DATABASE IF NOT EXISTS \`$db\`
+    CHARACTER SET utf8mb4
+    COLLATE utf8mb4_unicode_ci;
 
-    if [[ -z "$db_user" ]]; then
-        error "El usuario es obligatorio."
-        return 1
-    fi
+CREATE USER IF NOT EXISTS '$(sqlq "$u")'@'$(sqlq "$h")'
+    IDENTIFIED BY '$q';
 
-    if ! validate_mysql_identifier "$db_user"; then
-        error "Nombre de usuario inválido."
-        return 1
-    fi
+ALTER USER '$(sqlq "$u")'@'$(sqlq "$h")'
+    IDENTIFIED BY '$q';
 
-    read_input "Host [localhost]: " db_host
-
-    if [[ -z "$db_host" ]]; then
-        db_host="localhost"
-    fi
-
-    if ! validate_mysql_host "$db_host"; then
-        error "Host MySQL inválido."
-        return 1
-    fi
-
-    read_secret "Contraseña: " db_password
-
-    if [[ -z "$db_password" ]]; then
-        error "La contraseña no puede estar vacía."
-        return 1
-    fi
-
-    MYSQL_PWD="$db_password" \
-        mysql --protocol=socket -uroot <<SQL
-CREATE DATABASE IF NOT EXISTS \`${db_name}\`
-CHARACTER SET utf8mb4
-COLLATE utf8mb4_unicode_ci;
-
-CREATE USER IF NOT EXISTS '${db_user}'@'${db_host}'
-IDENTIFIED BY '${db_password}';
-
-ALTER USER '${db_user}'@'${db_host}'
-IDENTIFIED BY '${db_password}';
-
-GRANT ALL PRIVILEGES ON \`${db_name}\`.* TO '${db_user}'@'${db_host}';
+GRANT ALL PRIVILEGES ON \`$db\`.* TO '$(sqlq "$u")'@'$(sqlq "$h")';
 
 FLUSH PRIVILEGES;
 SQL
+    fi
 
-    success "Base de datos: ${db_name}"
-    success "Usuario: ${db_user}@${db_host}"
-    success "ALL PRIVILEGES sobre ${db_name}.*"
+    ok "BD + usuario configurados."
 }
 
-# ============================================================
-# MYSQL - ASIGNAR PRIVILEGIOS
-# ============================================================
-
-mysql_grant_privileges() {
-
-    local db_user=""
-    local db_host=""
-    local database=""
-    local grant_mode=""
-
+mysql_list() {
+    mysql -uroot -e 'SELECT User,Host FROM mysql.user ORDER BY User,Host;'
     echo
-    echo "============================================================"
-    echo " ASIGNAR PRIVILEGIOS MYSQL"
-    echo "============================================================"
-    echo
-
-    read_input "Usuario MySQL: " db_user
-
-    if [[ -z "$db_user" ]]; then
-        error "El usuario es obligatorio."
-        return 1
-    fi
-
-    if ! validate_mysql_identifier "$db_user"; then
-        error "Nombre de usuario inválido."
-        return 1
-    fi
-
-    read_input "Host [localhost]: " db_host
-
-    if [[ -z "$db_host" ]]; then
-        db_host="localhost"
-    fi
-
-    if ! validate_mysql_host "$db_host"; then
-        error "Host inválido."
-        return 1
-    fi
-
-    echo
-    echo "Tipo de privilegio:"
-    echo
-    echo "  1) ALL PRIVILEGES sobre una BD"
-    echo "  2) ALL PRIVILEGES sobre todas las BD"
-    echo
-
-    read_input "Selecciona [1]: " grant_mode
-
-    if [[ -z "$grant_mode" ]]; then
-        grant_mode="1"
-    fi
-
-    case "$grant_mode" in
-
-        1)
-
-            read_input "Base de datos: " database
-
-            if [[ -z "$database" ]]; then
-                error "La BD es obligatoria."
-                return 1
-            fi
-
-            if ! validate_mysql_identifier "$database"; then
-                error "Nombre de BD inválido."
-                return 1
-            fi
-
-            mysql --protocol=socket -uroot <<SQL
-GRANT ALL PRIVILEGES
-ON \`${database}\`.*
-TO '${db_user}'@'${db_host}';
-
-FLUSH PRIVILEGES;
-SQL
-
-            success "ALL PRIVILEGES asignados sobre ${database}.*"
-            ;;
-
-        2)
-
-            mysql --protocol=socket -uroot <<SQL
-GRANT ALL PRIVILEGES
-ON *.*
-TO '${db_user}'@'${db_host}'
-WITH GRANT OPTION;
-
-FLUSH PRIVILEGES;
-SQL
-
-            success "ALL PRIVILEGES asignados sobre *.*"
-            success "WITH GRANT OPTION habilitado."
-            ;;
-
-        *)
-
-            error "Opción inválida."
-
-            return 1
-            ;;
-
-    esac
+    mysql -uroot -e 'SHOW DATABASES;'
 }
 
-# ============================================================
-# MYSQL - REVOCAR PRIVILEGIOS
-# ============================================================
+mysql_grants() {
+    local u=""
+    local h="localhost"
 
-mysql_revoke_privileges() {
+    ask "Usuario: " u
+    ask "Host [localhost]: " h
 
-    local db_user=""
-    local db_host=""
-    local database=""
-    local revoke_mode=""
+    h="${h:-localhost}"
 
-    echo
-    echo "============================================================"
-    echo " REVOCAR PRIVILEGIOS MYSQL"
-    echo "============================================================"
-    echo
-
-    read_input "Usuario MySQL: " db_user
-
-    if [[ -z "$db_user" ]]; then
-        error "El usuario es obligatorio."
-        return 1
-    fi
-
-    if ! validate_mysql_identifier "$db_user"; then
-        error "Nombre de usuario inválido."
-        return 1
-    fi
-
-    read_input "Host [localhost]: " db_host
-
-    if [[ -z "$db_host" ]]; then
-        db_host="localhost"
-    fi
-
-    if ! validate_mysql_host "$db_host"; then
-        error "Host inválido."
-        return 1
-    fi
-
-    echo
-    echo "Revocar:"
-    echo
-    echo "  1) Privilegios sobre una BD"
-    echo "  2) Todos los privilegios"
-    echo
-
-    read_input "Selecciona [1]: " revoke_mode
-
-    if [[ -z "$revoke_mode" ]]; then
-        revoke_mode="1"
-    fi
-
-    case "$revoke_mode" in
-
-        1)
-
-            read_input "Base de datos: " database
-
-            if [[ -z "$database" ]]; then
-                error "La BD es obligatoria."
-                return 1
-            fi
-
-            if ! validate_mysql_identifier "$database"; then
-                error "Nombre de BD inválido."
-                return 1
-            fi
-
-            mysql --protocol=socket -uroot <<SQL
-REVOKE ALL PRIVILEGES
-ON \`${database}\`.*
-FROM '${db_user}'@'${db_host}';
-
-FLUSH PRIVILEGES;
-SQL
-
-            success "Privilegios revocados sobre ${database}.*"
-            ;;
-
-        2)
-
-            mysql --protocol=socket -uroot <<SQL
-REVOKE ALL PRIVILEGES, GRANT OPTION
-FROM '${db_user}'@'${db_host}';
-
-FLUSH PRIVILEGES;
-SQL
-
-            success "Privilegios globales revocados."
-            ;;
-
-        *)
-
-            error "Opción inválida."
-
-            return 1
-            ;;
-
-    esac
+    mysql -uroot -e \
+        "SHOW GRANTS FOR '$(sqlq "$u")'@'$(sqlq "$h")';"
 }
-
-# ============================================================
-# MYSQL - ELIMINAR USUARIO
-# ============================================================
 
 mysql_drop_user() {
+    local u=""
+    local h="localhost"
 
-    local db_user=""
-    local db_host=""
+    ask "Usuario: " u
+    ask "Host [localhost]: " h
 
-    echo
-    echo "============================================================"
-    echo " ELIMINAR USUARIO MYSQL"
-    echo "============================================================"
-    echo
+    h="${h:-localhost}"
 
-    read_input "Usuario MySQL: " db_user
+    yesno "¿Eliminar $u@$h?" || return
 
-    if [[ -z "$db_user" ]]; then
-        error "El usuario es obligatorio."
-        return 1
-    fi
+    mysql -uroot -e \
+        "DROP USER IF EXISTS '$(sqlq "$u")'@'$(sqlq "$h")'; FLUSH PRIVILEGES;"
 
-    if ! validate_mysql_identifier "$db_user"; then
-        error "Nombre de usuario inválido."
-        return 1
-    fi
-
-    read_input "Host [localhost]: " db_host
-
-    if [[ -z "$db_host" ]]; then
-        db_host="localhost"
-    fi
-
-    if ! validate_mysql_host "$db_host"; then
-        error "Host inválido."
-        return 1
-    fi
-
-    echo
-    warning "Se eliminará el usuario:"
-    echo "  ${db_user}@${db_host}"
-    echo
-
-    if ! confirm "¿Confirmar eliminación?"; then
-        warning "Operación cancelada."
-        return 0
-    fi
-
-    mysql --protocol=socket -uroot <<SQL
-DROP USER IF EXISTS '${db_user}'@'${db_host}';
-
-FLUSH PRIVILEGES;
-SQL
-
-    success "Usuario eliminado: ${db_user}@${db_host}"
+    ok "Usuario eliminado."
 }
 
-# ============================================================
-# MYSQL - ELIMINAR BASE DE DATOS
-# ============================================================
+mysql_drop_db() {
+    local db=""
 
-mysql_drop_database() {
+    ask "BD: " db
 
-    local db_name=""
-
-    echo
-    echo "============================================================"
-    echo " ELIMINAR BASE DE DATOS MYSQL"
-    echo "============================================================"
-    echo
-
-    read_input "Base de datos: " db_name
-
-    if [[ -z "$db_name" ]]; then
-        error "La BD es obligatoria."
+    ident "$db" || {
+        err "BD inválida."
         return 1
-    fi
+    }
 
-    if ! validate_mysql_identifier "$db_name"; then
-        error "Nombre de BD inválido."
-        return 1
-    fi
+    yesno "¿ELIMINAR DEFINITIVAMENTE $db?" || return
 
-    echo
-    warning "Se eliminará completamente la base de datos:"
-    echo "  ${db_name}"
-    echo
+    mysql -uroot -e \
+        "DROP DATABASE IF EXISTS \`$db\`;"
 
-    if ! confirm "¿CONFIRMAR ELIMINACIÓN DEFINITIVA?"; then
-        warning "Operación cancelada."
-        return 0
-    fi
-
-    mysql --protocol=socket -uroot <<SQL
-DROP DATABASE IF EXISTS \`${db_name}\`;
-SQL
-
-    success "Base de datos eliminada: ${db_name}"
+    ok "BD eliminada."
 }
 
-# ============================================================
-# MYSQL - LISTAR USUARIOS
-# ============================================================
-
-mysql_list_users() {
-
-    echo
-    echo "============================================================"
-    echo " USUARIOS MYSQL"
-    echo "============================================================"
-    echo
-
-    mysql --protocol=socket -uroot \
-        -e "SELECT User, Host FROM mysql.user ORDER BY User, Host;"
-}
-
-# ============================================================
-# MYSQL - LISTAR BASES
-# ============================================================
-
-mysql_list_databases() {
-
-    echo
-    echo "============================================================"
-    echo " BASES DE DATOS MYSQL"
-    echo "============================================================"
-    echo
-
-    mysql --protocol=socket -uroot \
-        -e "SHOW DATABASES;"
-}
-
-# ============================================================
-# MYSQL - PRIVILEGIOS DE USUARIO
-# ============================================================
-
-mysql_show_grants() {
-
-    local db_user=""
-    local db_host=""
-
-    echo
-    echo "============================================================"
-    echo " PRIVILEGIOS DE USUARIO MYSQL"
-    echo "============================================================"
-    echo
-
-    read_input "Usuario MySQL: " db_user
-
-    if [[ -z "$db_user" ]]; then
-        error "El usuario es obligatorio."
-        return 1
-    fi
-
-    if ! validate_mysql_identifier "$db_user"; then
-        error "Nombre de usuario inválido."
-        return 1
-    fi
-
-    read_input "Host [localhost]: " db_host
-
-    if [[ -z "$db_host" ]]; then
-        db_host="localhost"
-    fi
-
-    if ! validate_mysql_host "$db_host"; then
-        error "Host inválido."
-        return 1
-    fi
-
-    mysql --protocol=socket -uroot \
-        -e "SHOW GRANTS FOR '${db_user}'@'${db_host}';"
-}
-
-# ============================================================
-# MENÚ MYSQL
-# ============================================================
-
-mysql_management_menu() {
-
+mysql_menu() {
     local option=""
 
-    while true; do
+    while :; do
+        echo
+        echo "================ MYSQL ================"
+        echo "1  Crear BD"
+        echo "2  Crear usuario"
+        echo "3  Crear BD + usuario"
+        echo "4  Listar"
+        echo "5  GRANTS"
+        echo "6  Eliminar usuario"
+        echo "7  Eliminar BD"
+        echo "0  Volver"
 
-        clear 2>/dev/null || true
-
-        echo
-        echo "============================================================"
-        echo " ADMINISTRACIÓN MYSQL"
-        echo "============================================================"
-        echo
-        echo "  1) Crear solamente una base de datos"
-        echo "  2) Crear solamente un usuario"
-        echo "  3) Crear BD + usuario"
-        echo "  4) Asignar ALL PRIVILEGES"
-        echo "  5) Revocar privilegios"
-        echo "  6) Mostrar privilegios de usuario"
-        echo "  7) Listar usuarios"
-        echo "  8) Listar bases de datos"
-        echo "  9) Eliminar usuario"
-        echo " 10) Eliminar base de datos"
-        echo
-        echo "  0) Volver"
-        echo
-
-        if ! read -r -u "$TTY_FD" -p "Selecciona una opción: " option; then
-            return 1
-        fi
+        read -r -u "$TTY_FD" -p "Opción: " option || return
 
         case "$option" in
-
-            1)
-                mysql_create_database
-                pause_screen
-                ;;
-
-            2)
-                mysql_create_user
-                pause_screen
-                ;;
-
-            3)
-                mysql_create_database_and_user
-                pause_screen
-                ;;
-
-            4)
-                mysql_grant_privileges
-                pause_screen
-                ;;
-
-            5)
-                mysql_revoke_privileges
-                pause_screen
-                ;;
-
-            6)
-                mysql_show_grants
-                pause_screen
-                ;;
-
-            7)
-                mysql_list_users
-                pause_screen
-                ;;
-
-            8)
-                mysql_list_databases
-                pause_screen
-                ;;
-
-            9)
-                mysql_drop_user
-                pause_screen
-                ;;
-
-            10)
-                mysql_drop_database
-                pause_screen
-                ;;
-
-            0)
-                return 0
-                ;;
-
-            *)
-                warning "Opción no válida."
-                sleep 1
-                ;;
-
+            1) mysql_db ;;
+            2) mysql_user ;;
+            3) mysql_db_user ;;
+            4) mysql_list ;;
+            5) mysql_grants ;;
+            6) mysql_drop_user ;;
+            7) mysql_drop_db ;;
+            0) return ;;
+            *) warn "Opción inválida." ;;
         esac
 
+        pause
     done
 }
 
-# ============================================================
+# ============================================================================
 # PHPMYADMIN
-# ============================================================
+# ============================================================================
 
-install_phpmyadmin() {
-
-    info "Instalando phpMyAdmin..."
-
+phpmyadmin_install() {
     export DEBIAN_FRONTEND=noninteractive
 
-    apt-get update
+    if (( !DRY_RUN )); then
+        echo 'phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2' |
+            debconf-set-selections
 
-    echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2" \
-        | debconf-set-selections
-
-    echo "phpmyadmin phpmyadmin/dbconfig-install boolean false" \
-        | debconf-set-selections
-
-    apt-get install -y phpmyadmin
-
-    if [[ -d /usr/share/phpmyadmin ]]; then
-
-        if [[ ! -e /var/www/html/phpmyadmin ]]; then
-            ln -s /usr/share/phpmyadmin /var/www/html/phpmyadmin
-        fi
-
+        echo 'phpmyadmin phpmyadmin/dbconfig-install boolean false' |
+            debconf-set-selections
     fi
 
-    cat > /etc/apache2/conf-available/phpmyadmin-custom.conf <<'EOF'
+    apt_install phpmyadmin
+
+    if (( !DRY_RUN )); then
+        cat >/etc/apache2/conf-available/phpmyadmin-custom.conf <<'CONF'
 Alias /phpmyadmin /usr/share/phpmyadmin
 
 <Directory /usr/share/phpmyadmin>
     Options FollowSymLinks
     DirectoryIndex index.php
-
     AllowOverride All
-
-    Require all granted
+    Require local
 </Directory>
-EOF
-
-    a2enconf phpmyadmin-custom
-
-    systemctl restart apache2
-
-    if [[ -f /usr/share/phpmyadmin/index.php ]]; then
-
-        success "phpMyAdmin instalado."
-        success "URL: http://IP-SERVIDOR/phpmyadmin"
-
-    else
-
-        warning "phpMyAdmin fue instalado pero no se encontró su directorio."
+CONF
     fi
+
+    run a2enconf phpmyadmin-custom
+    run apache2ctl configtest
+    run systemctl reload apache2
+
+    ok "phpMyAdmin instalado."
+    mark_component phpmyadmin
 }
 
-# ============================================================
-# VIRTUAL HOST
-# ============================================================
+# ============================================================================
+# NODE
+# ============================================================================
 
-create_virtual_host() {
+node_install() {
+    local current_major=""
 
-    local domain=""
-    local document_root=""
-    local conf_name=""
-
-    echo
-    echo "============================================================"
-    echo " CREAR VIRTUAL HOST APACHE"
-    echo "============================================================"
-    echo
-
-    read_input "Dominio o hostname: " domain
-
-    if [[ -z "$domain" ]]; then
-        error "El dominio es obligatorio."
-        return 1
+    if command_exists node; then
+        current_major="$(
+            node -p 'process.versions.node.split(".")[0]' 2>/dev/null ||
+                true
+        )
     fi
 
-    read_input \
-        "DocumentRoot [/var/www/${domain}]: " \
-        document_root
-
-    if [[ -z "$document_root" ]]; then
-        document_root="/var/www/${domain}"
+    if [[ "$current_major" == "$NODE_MAJOR" ]]; then
+        ok "Node $(node --version)"
+        return
     fi
 
-    conf_name="${domain//[^a-zA-Z0-9._-]/_}.conf"
+    run_shell \
+        "curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -"
 
-    mkdir -p "$document_root"
+    apt_install nodejs
 
-    chown -R www-data:www-data "$document_root"
+    ok "Node $(node --version)"
+    ok "npm $(npm --version)"
 
-    cat > "/etc/apache2/sites-available/${conf_name}" <<EOF
-<VirtualHost *:80>
-
-    ServerName ${domain}
-
-    DocumentRoot ${document_root}
-
-    <Directory ${document_root}>
-        Options FollowSymLinks
-        AllowOverride All
-        Require all granted
-    </Directory>
-
-    DirectoryIndex index.php index.html
-
-    ErrorLog \${APACHE_LOG_DIR}/${domain}_error.log
-    CustomLog \${APACHE_LOG_DIR}/${domain}_access.log combined
-
-</VirtualHost>
-EOF
-
-    a2ensite "$conf_name"
-
-    systemctl reload apache2
-
-    success "Virtual Host creado."
-    success "Dominio: ${domain}"
-    success "DocumentRoot: ${document_root}"
+    mark_component node
 }
 
-# ============================================================
-# NODE.JS
-# ============================================================
+# ============================================================================
+# OMNIROUTE
+# ============================================================================
 
-install_node() {
+omni_user() {
+    getent group "$OMNI_GROUP" >/dev/null ||
+        run groupadd --system "$OMNI_GROUP"
 
-    info "Instalando Node.js ${NODE_MAJOR} LTS..."
-
-    export DEBIAN_FRONTEND=noninteractive
-
-    apt-get update
-
-    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" \
-        | bash -
-
-    apt-get install -y nodejs
-
-    node --version
-    npm --version
-
-    success "Node.js instalado."
-}
-
-# ============================================================
-# OMNIROUTE USER
-# ============================================================
-
-create_omniroute_user() {
-
-    if ! getent group "$OMNI_GROUP" >/dev/null 2>&1; then
-        groupadd --system "$OMNI_GROUP"
-    fi
-
-    if ! id "$OMNI_USER" >/dev/null 2>&1; then
-
-        useradd \
+    id "$OMNI_USER" >/dev/null 2>&1 ||
+        run useradd \
             --system \
             --gid "$OMNI_GROUP" \
             --home-dir "$OMNI_HOME" \
             --create-home \
             --shell /usr/sbin/nologin \
             "$OMNI_USER"
-    fi
 
-    mkdir -p "$OMNI_HOME"
-
-    chown -R "$OMNI_USER:$OMNI_GROUP" "$OMNI_HOME"
-
-    chmod 750 "$OMNI_HOME"
+    run mkdir -p "$OMNI_HOME"
+    run chown -R "$OMNI_USER:$OMNI_GROUP" "$OMNI_HOME"
+    run chmod 750 "$OMNI_HOME"
 }
 
-# ============================================================
-# OMNIROUTE
-# ============================================================
+omni_binary() {
+    command -v omniroute || true
+}
 
-install_omniroute() {
+omni_install() {
+    node_install
 
-    info "Instalando OmniRoute..."
+    local binary=""
 
-    if ! command -v node >/dev/null 2>&1; then
-        install_node
+    if ! command_exists omniroute; then
+        run npm install -g omniroute
     fi
 
-    local node_version
-    node_version="$(node --version)"
+    binary="$(omni_binary)"
 
-    info "Node.js detectado: ${node_version}"
-
-    npm install -g omniroute
-
-    local omni_bin
-    omni_bin="$(command -v omniroute || true)"
-
-    if [[ -z "$omni_bin" ]]; then
-
-        error "No se encontró el ejecutable omniroute."
-
+    [[ -n "$binary" ]] || {
+        err "No se encontró el binario OmniRoute."
         return 1
-    fi
+    }
 
-    create_omniroute_user
+    omni_user
 
-    cat > /etc/systemd/system/omniroute.service <<EOF
+    if (( !DRY_RUN )); then
+        cat >/etc/systemd/system/omniroute.service <<UNIT
 [Unit]
 Description=OmniRoute AI Gateway
 After=network-online.target
@@ -1518,1119 +1058,1537 @@ Wants=network-online.target
 [Service]
 Type=simple
 
-User=${OMNI_USER}
-Group=${OMNI_GROUP}
+User=$OMNI_USER
+Group=$OMNI_GROUP
 
-WorkingDirectory=${OMNI_HOME}
+WorkingDirectory=$OMNI_HOME
 
 Environment=NODE_ENV=production
-Environment=HOME=${OMNI_HOME}
-Environment=HOST=0.0.0.0
-Environment=PORT=${OMNI_PORT}
+Environment=HOME=$OMNI_HOME
+Environment=HOST=$OMNI_BIND
+Environment=PORT=$OMNI_PORT
 
-ExecStart=${omni_bin} serve --port ${OMNI_PORT} --no-open
+ExecStart=$binary serve --host $OMNI_BIND --port $OMNI_PORT --no-open
 
 Restart=always
 RestartSec=5
 
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+ReadWritePaths=$OMNI_HOME
 
 [Install]
 WantedBy=multi-user.target
-EOF
+UNIT
+    fi
 
-    systemctl daemon-reload
-    systemctl enable omniroute
-    systemctl restart omniroute
+    run systemctl daemon-reload
+    run systemctl enable --now omniroute
 
-    sleep 3
+    sleep 1
 
-    if systemctl is-active --quiet omniroute; then
-
-        success "OmniRoute activo."
-
+    if service_active omniroute; then
+        ok "OmniRoute activo."
     else
-
-        error "OmniRoute no quedó activo."
-
+        warn "OmniRoute no quedó activo."
         systemctl --no-pager --full status omniroute || true
-
-        return 1
     fi
 
-    success "OmniRoute escuchando en 0.0.0.0:${OMNI_PORT}"
+    save_config
+    mark_component omniroute
+
+    omni_health
 }
 
-# ============================================================
-# ESTADO OMNIROUTE
-# ============================================================
-
-omniroute_status() {
-
-    echo
-    echo "============================================================"
-    echo " ESTADO OMNIROUTE"
-    echo "============================================================"
-    echo
-
-    systemctl --no-pager --full status omniroute || true
-
-    echo
-    echo "Puerto:"
-    ss -lntp 2>/dev/null | grep ":${OMNI_PORT}" || true
-
-    echo
-    echo "Binario:"
-    command -v omniroute || true
-
-    echo
-    echo "Node:"
-    node --version 2>/dev/null || true
-
-    echo
-    echo "NPM:"
-    npm --version 2>/dev/null || true
-}
-
-# ============================================================
-# OLLAMA
-# ============================================================
-
-install_ollama() {
-
-    info "Instalando Ollama..."
-
-    if command -v ollama >/dev/null 2>&1; then
-
-        success "Ollama ya está instalado."
-
-    else
-
-        curl -fsSL https://ollama.com/install.sh | sh
-    fi
-
-    systemctl enable ollama
-
-    mkdir -p /etc/systemd/system/ollama.service.d
-
-    cat > /etc/systemd/system/ollama.service.d/override.conf <<EOF
-[Service]
-Environment="OLLAMA_HOST=${OLLAMA_HOST_DEFAULT}:${OLLAMA_PORT}"
-Environment="OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE}"
-Environment="OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH}"
-EOF
-
-    systemctl daemon-reload
-    systemctl restart ollama
-
-    sleep 3
-
-    if systemctl is-active --quiet ollama; then
-
-        success "Ollama activo."
-
-    else
-
-        error "Ollama no quedó activo."
-
-        systemctl --no-pager --full status ollama || true
-
-        return 1
-    fi
-
-    echo
-    ollama --version || true
-    echo
-
-    success "Ollama configurado en ${OLLAMA_HOST_DEFAULT}:${OLLAMA_PORT}"
-}
-
-# ============================================================
-# ESTADO OLLAMA
-# ============================================================
-
-ollama_status() {
-
-    echo
-    echo "============================================================"
-    echo " ESTADO OLLAMA"
-    echo "============================================================"
-    echo
-
-    systemctl --no-pager --full status ollama || true
-
-    echo
-    echo "Puerto:"
-    ss -lntp 2>/dev/null | grep ":${OLLAMA_PORT}" || true
-
-    echo
-    echo "Versión:"
-    ollama --version 2>/dev/null || true
-
-    echo
-    echo "Modelos:"
-    ollama list 2>/dev/null || true
-}
-
-# ============================================================
-# DESCARGAR MODELO
-# ============================================================
-
-download_ollama_model() {
-
-    local model=""
-
-    echo
-    echo "============================================================"
-    echo " DESCARGAR MODELO OLLAMA"
-    echo "============================================================"
-    echo
-    echo "Ejemplos:"
-    echo "  qwen3:8b"
-    echo "  qwen3:14b"
-    echo "  qwen3:30b"
-    echo "  qwen3-coder:30b"
-    echo "  deepseek-coder:33b"
-    echo
-
-    read_input "Modelo: " model
-
-    if [[ -z "$model" ]]; then
-
-        error "Debes indicar un modelo."
-
-        return 1
-    fi
-
-    ollama pull "$model"
-
-    success "Modelo descargado: $model"
-}
-
-# ============================================================
-# LLMMFIT
-# ============================================================
-
-install_llmfit() {
-
-    info "Instalando llmfit..."
-
-    if command -v llmfit >/dev/null 2>&1; then
-
-        success "llmfit ya está instalado."
-
-        llmfit --version || true
-
+omni_health() {
+    if ! command_exists curl; then
         return 0
     fi
 
-    curl -fsSL https://llmfit.axjns.dev/install.sh | sh
+    if curl -fsS \
+        --max-time 5 \
+        "http://127.0.0.1:${OMNI_PORT}/v1/models" \
+        >/dev/null 2>&1
+    then
+        ok "OmniRoute API: OK"
+    else
+        warn "OmniRoute API: no responde en localhost:${OMNI_PORT}"
+    fi
+}
 
-    if ! command -v llmfit >/dev/null 2>&1; then
+omni_bind() {
+    local option=""
 
-        if [[ -x "$HOME/.local/bin/llmfit" ]]; then
+    echo
+    echo "================ OMNIROUTE BIND ================"
+    echo "1  Solo localhost       127.0.0.1"
+    echo "2  Solo LAN              IP detectada"
+    echo "3  Todos IPv4            0.0.0.0"
 
-            ln -sf "$HOME/.local/bin/llmfit" /usr/local/bin/llmfit
+    ask "Opción [3]: " option
+
+    net_detect
+
+    case "${option:-3}" in
+        1)
+            OMNI_BIND="127.0.0.1"
+            ;;
+        2)
+            [[ -n "$LAN_IP" ]] || {
+                err "No se pudo detectar IP LAN."
+                return 1
+            }
+            OMNI_BIND="$LAN_IP"
+            ;;
+        3)
+            OMNI_BIND="0.0.0.0"
+            ;;
+        *)
+            err "Opción inválida."
+            return 1
+            ;;
+    esac
+
+    save_config
+    omni_install
+}
+
+# ============================================================================
+# OLLAMA
+# ============================================================================
+
+ollama_install() {
+    if ! command_exists ollama; then
+        run_shell 'curl -fsSL https://ollama.com/install.sh | sh'
+    fi
+
+    command_exists ollama || {
+        err "Ollama no está instalado."
+        return 1
+    }
+
+    if (( !DRY_RUN )); then
+        mkdir -p /etc/systemd/system/ollama.service.d
+
+        cat >/etc/systemd/system/ollama.service.d/override.conf <<UNIT
+[Service]
+Environment="OLLAMA_HOST=${OLLAMA_BIND}:${OLLAMA_PORT}"
+Environment="OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE}"
+Environment="OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH}"
+UNIT
+    fi
+
+    run systemctl daemon-reload
+    run systemctl enable --now ollama
+    run systemctl restart ollama
+
+    sleep 2
+
+    if service_active ollama; then
+        ok "Ollama activo."
+    else
+        warn "Ollama no quedó activo."
+        systemctl --no-pager --full status ollama || true
+    fi
+
+    save_config
+    mark_component ollama
+
+    ollama_health
+}
+
+ollama_health() {
+    if curl -fsS \
+        --max-time 5 \
+        "http://127.0.0.1:${OLLAMA_PORT}/api/tags" \
+        >/dev/null 2>&1
+    then
+        ok "Ollama API: OK"
+    else
+        warn "Ollama API: no responde en localhost:${OLLAMA_PORT}"
+    fi
+}
+
+ollama_bind() {
+    local option=""
+    local context=""
+
+    echo
+    echo "================ OLLAMA BIND ================"
+    echo "1  Solo localhost       127.0.0.1"
+    echo "2  Solo LAN              IP detectada"
+    echo "3  Todos IPv4            0.0.0.0"
+
+    ask "Bind [1]: " option
+
+    net_detect
+
+    case "${option:-1}" in
+        1)
+            OLLAMA_BIND="127.0.0.1"
+            ;;
+        2)
+            [[ -n "$LAN_IP" ]] || {
+                err "No se pudo detectar IP LAN."
+                return 1
+            }
+            OLLAMA_BIND="$LAN_IP"
+            ;;
+        3)
+            OLLAMA_BIND="0.0.0.0"
+            ;;
+        *)
+            err "Opción inválida."
+            return 1
+            ;;
+    esac
+
+    ask "Context length [$OLLAMA_CONTEXT_LENGTH]: " context
+    OLLAMA_CONTEXT_LENGTH="${context:-$OLLAMA_CONTEXT_LENGTH}"
+
+    [[ "$OLLAMA_CONTEXT_LENGTH" =~ ^[0-9]+$ ]] || {
+        err "Context length inválido."
+        return 1
+    }
+
+    save_config
+    ollama_install
+}
+
+model_pull() {
+    local model=""
+
+    ask "Modelo Ollama: " model
+
+    [[ -n "$model" ]] || {
+        err "Modelo vacío."
+        return 1
+    }
+
+    run ollama pull "$model"
+}
+
+model_list() {
+    ollama list
+}
+
+# ============================================================================
+# LLMFIT
+# ============================================================================
+
+llmfit_install() {
+    if command_exists llmfit; then
+        return 0
+    fi
+
+    run_shell 'curl -fsSL https://llmfit.axjns.dev/install.sh | sh'
+
+    if [[ -x /root/.local/bin/llmfit ]]; then
+        run ln -sf /root/.local/bin/llmfit /usr/local/bin/llmfit
+    fi
+
+    command_exists llmfit || {
+        err "llmfit no está disponible."
+        return 1
+    }
+
+    mark_component llmfit
+}
+
+llmfit_menu() {
+    local option=""
+
+    llmfit_install
+
+    while :; do
+        echo
+        echo "================ LLMFIT ================"
+        echo "1  Hardware"
+        echo "2  Recommend"
+        echo "3  Coding"
+        echo "4  Benchmark"
+        echo "0  Volver"
+
+        read -r -u "$TTY_FD" -p "Opción: " option || return
+
+        case "$option" in
+            1) llmfit hardware ;;
+            2) llmfit recommend ;;
+            3) llmfit recommend --coding ;;
+            4) llmfit benchmark ;;
+            0) return ;;
+            *) warn "Opción inválida." ;;
+        esac
+
+        pause
+    done
+}
+
+# ============================================================================
+# SAMBA
+# ============================================================================
+
+samba_install() {
+    apt_install \
+        samba \
+        samba-common-bin \
+        smbclient \
+        cifs-utils \
+        acl \
+        attr
+
+    run systemctl enable --now smbd
+    run systemctl enable --now nmbd
+
+    ok "Samba instalado."
+    mark_component samba
+}
+
+samba_www() {
+    samba_install
+
+    run mkdir -p "$SAMBA_SHARE_PATH"
+
+    if (( !DRY_RUN )); then
+        if [[ -f /etc/samba/smb.conf ]]; then
+            cp -a \
+                /etc/samba/smb.conf \
+                "/etc/samba/smb.conf.ia-server.$(date +%Y%m%d-%H%M%S)"
+        fi
+
+        if ! grep -q "^\\[$SAMBA_SHARE_NAME\\]$" /etc/samba/smb.conf; then
+            cat >>/etc/samba/smb.conf <<SHARE
+
+[$SAMBA_SHARE_NAME]
+    comment = IA-SERVER Web Root
+    path = $SAMBA_SHARE_PATH
+    browseable = yes
+    read only = no
+    writable = yes
+    valid users = %U
+    create mask = 0664
+    directory mask = 0775
+    force create mode = 0664
+    force directory mode = 0775
+    inherit permissions = yes
+SHARE
         fi
     fi
 
-    if command -v llmfit >/dev/null 2>&1; then
+    run testparm -s
+    run systemctl restart smbd
+    run systemctl restart nmbd
 
-        llmfit --version || true
+    ok "Samba [$SAMBA_SHARE_NAME] -> $SAMBA_SHARE_PATH"
+}
 
-        success "llmfit disponible."
+samba_users() {
+    local option=""
 
-    else
+    while :; do
+        echo
+        echo "================ SAMBA ================"
+        echo "1  Listar usuarios"
+        echo "2  Agregar usuario"
+        echo "3  Cambiar contraseña"
+        echo "4  Eliminar usuario"
+        echo "5  Probar servidor"
+        echo "0  Volver"
 
-        error "No se pudo localizar llmfit después de la instalación."
+        read -r -u "$TTY_FD" -p "Opción: " option || return
 
+        case "$option" in
+            1)
+                pdbedit -L || true
+                ;;
+            2)
+                local user=""
+                ask "Usuario Linux existente: " user
+
+                id "$user" >/dev/null 2>&1 || {
+                    err "El usuario Linux no existe."
+                    pause
+                    continue
+                }
+
+                run smbpasswd -a "$user"
+                ;;
+            3)
+                local user=""
+                ask "Usuario: " user
+                run smbpasswd "$user"
+                ;;
+            4)
+                local user=""
+                ask "Usuario: " user
+                yesno "¿Eliminar usuario Samba $user?" || continue
+                run smbpasswd -x "$user"
+                ;;
+            5)
+                run smbclient -L localhost -N || true
+                ;;
+            0)
+                return
+                ;;
+            *)
+                warn "Opción inválida."
+                ;;
+        esac
+
+        pause
+    done
+}
+
+# ============================================================================
+# DNSMASQ
+# ============================================================================
+
+dns_install() {
+    apt_install dnsmasq
+
+    net_detect
+
+    [[ -n "$LAN_IP" ]] || {
+        err "No se pudo detectar IP LAN."
         return 1
+    }
+
+    [[ -n "$LAN_IFACE" ]] || {
+        err "No se pudo detectar interfaz LAN."
+        return 1
+    }
+
+    if (( !DRY_RUN )); then
+        cat >"$DNSMASQ_CONF" <<DNS
+# ============================================================================
+# IA-SERVER dnsmasq
+# Gestionado por ${SCRIPT_NAME}
+# ============================================================================
+
+port=53
+
+interface=${LAN_IFACE}
+listen-address=${LAN_IP}
+
+bind-interfaces
+
+# No DHCP:
+no-dhcp-interface=${LAN_IFACE}
+
+domain-needed
+bogus-priv
+
+cache-size=1000
+
+server=${DNS_UPSTREAM_1}
+server=${DNS_UPSTREAM_2}
+
+conf-file=${DNSMASQ_RECORDS}
+DNS
+
+        if [[ ! -f "$DNSMASQ_RECORDS" ]]; then
+            cat >"$DNSMASQ_RECORDS" <<DNS
+# Registros locales IA-SERVER
+# Formato:
+# address=/dominio/IP
+DNS
+        fi
+    fi
+
+    run dnsmasq --test
+    run systemctl enable --now dnsmasq
+    run systemctl restart dnsmasq
+
+    ok "dnsmasq operativo en ${LAN_IP}:53"
+    mark_component dns
+}
+
+dns_record() {
+    local domain="$1"
+    local ip="${2:-$LAN_IP}"
+
+    valid_domain "$domain" || {
+        err "Dominio DNS inválido: $domain"
+        return 1
+    }
+
+    [[ -n "$ip" ]] || {
+        err "IP DNS vacía."
+        return 1
+    }
+
+    [[ -f "$DNSMASQ_RECORDS" ]] || dns_install
+
+    if (( !DRY_RUN )); then
+        touch "$DNSMASQ_RECORDS"
+
+        local tmp
+        tmp="$(mktemp)"
+
+        grep -v -E "^address=/${domain}/" \
+            "$DNSMASQ_RECORDS" >"$tmp" || true
+
+        printf 'address=/%s/%s\n' "$domain" "$ip" >>"$tmp"
+
+        mv "$tmp" "$DNSMASQ_RECORDS"
+    fi
+
+    run dnsmasq --test
+    run systemctl restart dnsmasq
+
+    ok "DNS: $domain -> $ip"
+}
+
+dns_import_vhosts() {
+    dns_install
+    net_detect
+
+    if (( !DRY_RUN )); then
+        {
+            echo "# Registros sincronizados desde Apache"
+            echo
+
+            apache2ctl -S 2>&1 |
+                sed -n -E \
+                    -e 's/.*namevhost[[:space:]]+([^[:space:]]+).*/\1/p' \
+                    -e 's/.*alias[[:space:]]+([^[:space:]]+).*/\1/p' |
+                sort -u |
+                while read -r domain; do
+                    if valid_domain "$domain"; then
+                        printf 'address=/%s/%s\n' "$domain" "$LAN_IP"
+                    fi
+                done
+
+            printf 'address=/%s/%s\n' "$LOCAL_DOMAIN" "$LAN_IP"
+
+        } >"$DNSMASQ_RECORDS"
+    fi
+
+    run dnsmasq --test
+    run systemctl restart dnsmasq
+
+    ok "DNS local sincronizado con Apache."
+}
+
+dns_test() {
+    net_detect
+
+    echo
+    echo "================ DNS TEST ================"
+    echo "DNS local: ${LAN_IP}:53"
+
+    if command_exists dig; then
+        echo
+        echo "Consulta $LOCAL_DOMAIN:"
+        dig +short @"$LAN_IP" "$LOCAL_DOMAIN" 2>/dev/null || true
+
+        echo
+        echo "Consulta localhost:"
+        dig +short @127.0.0.1 "$LOCAL_DOMAIN" 2>/dev/null || true
     fi
 }
 
-# ============================================================
-# HARDWARE LLMFIT
-# ============================================================
-
-llmfit_hardware() {
-
-    install_llmfit
+dns_status() {
+    net_detect
 
     echo
-    echo "============================================================"
-    echo " HARDWARE LLMFIT"
-    echo "============================================================"
-    echo
+    echo "================ DNS ================"
+    printf 'Servidor : %s\n' "${LAN_IP:-N/D}"
+    printf 'Interfaz : %s\n' "${LAN_IFACE:-N/D}"
+    printf 'Puerto   : 53\n'
+    printf 'Dominio  : %s\n' "$LOCAL_DOMAIN"
 
-    llmfit hardware
+    ss -lunpt 2>/dev/null |
+        grep -E '(:53[[:space:]]|:53$)' ||
+        true
+
+    dns_test
 }
 
-# ============================================================
-# RECOMENDACIONES LLMFIT
-# ============================================================
-
-llmfit_recommendations() {
-
-    install_llmfit
-
-    echo
-    echo "============================================================"
-    echo " RECOMENDACIONES LLMFIT"
-    echo "============================================================"
-    echo
-
-    llmfit recommend
-}
-
-# ============================================================
-# CODING LLMFIT
-# ============================================================
-
-llmfit_coding() {
-
-    install_llmfit
-
-    echo
-    echo "============================================================"
-    echo " MODELOS CODING LLMFIT"
-    echo "============================================================"
-    echo
-
-    llmfit recommend --coding
-}
-
-# ============================================================
-# BENCHMARK LLMFIT
-# ============================================================
-
-llmfit_benchmark() {
-
-    install_llmfit
-
-    echo
-    echo "============================================================"
-    echo " BENCHMARK LLMFIT"
-    echo "============================================================"
-    echo
-
-    llmfit benchmark
-}
-
-# ============================================================
+# ============================================================================
 # FIREWALL
-# ============================================================
+# ============================================================================
 
-configure_firewall() {
+firewall() {
+    net_detect
 
-    info "Configurando UFW..."
+    apt_install ufw
 
-    apt-get install -y ufw
+    run ufw --force reset
 
-    ufw --force reset
+    run ufw default deny incoming
+    run ufw default allow outgoing
 
-    ufw default deny incoming
-    ufw default allow outgoing
+    run ufw allow 22/tcp
+    run ufw allow 80/tcp
+    run ufw allow 443/tcp
 
-    ufw allow 22/tcp
-    ufw allow 80/tcp
-    ufw allow 443/tcp
+    if [[ -n "$LAN_CIDR" ]]; then
 
-    # OmniRoute LAN
-    ufw allow from 192.168.1.0/24 \
-        to any port "${OMNI_PORT}" \
-        proto tcp
+        # DNS
+        run ufw allow from "$LAN_CIDR" to any port 53 proto udp
+        run ufw allow from "$LAN_CIDR" to any port 53 proto tcp
 
-    # Ollama permanece en localhost.
-    # No se expone a la LAN.
+        # Samba
+        run ufw allow from "$LAN_CIDR" to any port 139 proto tcp
+        run ufw allow from "$LAN_CIDR" to any port 445 proto tcp
+        run ufw allow from "$LAN_CIDR" to any port 137 proto udp
+        run ufw allow from "$LAN_CIDR" to any port 138 proto udp
 
-    ufw --force enable
+        # OmniRoute
+        if [[ "$OMNI_BIND" != "127.0.0.1" ]]; then
+            run ufw allow from "$LAN_CIDR" to any port "$OMNI_PORT" proto tcp
+        fi
 
-    success "Firewall UFW configurado."
+        # Ollama
+        if [[ "$OLLAMA_BIND" != "127.0.0.1" ]]; then
+            run ufw allow from "$LAN_CIDR" to any port "$OLLAMA_PORT" proto tcp
+        fi
+    fi
 
-    ufw status verbose
+    run ufw --force enable
+    run ufw status verbose
+
+    ok "UFW configurado."
+    mark_component firewall
 }
 
-# ============================================================
+# ============================================================================
+# SEGURIDAD
+# ============================================================================
+
+security() {
+    apt_install \
+        fail2ban \
+        unattended-upgrades \
+        apt-listchanges
+
+    if (( !DRY_RUN )); then
+        mkdir -p /etc/fail2ban/jail.d
+
+        cat >/etc/fail2ban/jail.d/ia-server.local <<'JAIL'
+[sshd]
+enabled = true
+backend = systemd
+maxretry = 5
+findtime = 10m
+bantime = 1h
+JAIL
+
+        mkdir -p /etc/apt/apt.conf.d
+
+        cat >/etc/apt/apt.conf.d/52ia-server-unattended <<'APT'
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "false";
+APT
+    fi
+
+    run systemctl enable --now fail2ban
+    run systemctl enable --now apt-daily.timer
+    run systemctl enable --now apt-daily-upgrade.timer
+
+    ok "Seguridad configurada."
+    mark_component security
+}
+
+# ============================================================================
 # SWAP
-# ============================================================
+# ============================================================================
 
-configure_swap() {
-
-    local swap_size="16G"
-
-    echo
-    echo "============================================================"
-    echo " CONFIGURACIÓN SWAP"
-    echo "============================================================"
-    echo
-
-    if swapon --show --noheadings | grep -q .; then
-
-        warning "Ya existe una partición/archivo swap."
-
+swap_config() {
+    if swapon --show --noheadings 2>/dev/null | grep -q .; then
+        echo
+        echo "Swap existente:"
         swapon --show
-
         return 0
     fi
 
-    read_input "Tamaño de swap [16G]: " swap_size
+    local size="16G"
 
-    if [[ -z "$swap_size" ]]; then
-        swap_size="16G"
+    ask "Swap [$size]: " size
+    size="${size:-16G}"
+
+    run fallocate -l "$size" /swapfile
+    run chmod 600 /swapfile
+    run mkswap /swapfile
+    run swapon /swapfile
+
+    if (( !DRY_RUN )); then
+        grep -q '^/swapfile ' /etc/fstab ||
+            echo '/swapfile none swap sw 0 0' >>/etc/fstab
     fi
 
-    info "Creando swap de ${swap_size}..."
-
-    fallocate -l "$swap_size" /swapfile
-    chmod 600 /swapfile
-    mkswap /swapfile
-    swapon /swapfile
-
-    if ! grep -q '^/swapfile ' /etc/fstab; then
-        echo '/swapfile none swap sw 0 0' >> /etc/fstab
-    fi
-
-    success "Swap configurada."
-
-    swapon --show
+    ok "Swap configurada: $size"
+    mark_component swap
 }
 
-# ============================================================
+# ============================================================================
 # OPTIMIZACIÓN
-# ============================================================
+# ============================================================================
 
-optimize_system() {
-
-    info "Aplicando optimización del sistema..."
-
-    cat > /etc/sysctl.d/99-ia-server.conf <<'EOF'
+optimize() {
+    if (( !DRY_RUN )); then
+        cat >/etc/sysctl.d/99-ia-server.conf <<'SYS'
 vm.swappiness=10
 vm.vfs_cache_pressure=50
+
 fs.inotify.max_user_watches=524288
 fs.inotify.max_user_instances=1024
+
 net.core.somaxconn=65535
 net.ipv4.tcp_fin_timeout=15
 net.ipv4.tcp_keepalive_time=600
-EOF
+SYS
 
-    sysctl --system >/dev/null
+        mkdir -p /etc/systemd/journald.conf.d
 
-    mkdir -p /etc/systemd/journald.conf.d
-
-    cat > /etc/systemd/journald.conf.d/ia-server.conf <<'EOF'
+        cat >/etc/systemd/journald.conf.d/ia-server.conf <<'JOURNAL'
 [Journal]
 SystemMaxUse=1G
 RuntimeMaxUse=256M
 MaxRetentionSec=14day
-EOF
+JOURNAL
+    fi
 
-    systemctl restart systemd-journald
+    run sysctl --system
+    run systemctl restart systemd-journald
 
-    success "Optimización aplicada."
+    ok "Optimización aplicada."
+    mark_component optimize
 }
 
-# ============================================================
-# ESTADO SERVICIOS
-# ============================================================
+# ============================================================================
+# CERTBOT
+# ============================================================================
 
-service_status() {
+certbot_install() {
+    apt_install certbot python3-certbot-apache
 
-    echo
-    echo "============================================================"
-    echo " ESTADO DE SERVICIOS"
-    echo "============================================================"
-    echo
+    ok "Certbot instalado."
+    info "Ejemplo: certbot --apache -d dominio.example"
+    mark_component certbot
+}
 
-    local services=(
-        ssh
-        apache2
-        mysql
-        "php${PHP_VERSION}-fpm"
-        omniroute
-        ollama
+# ============================================================================
+# BACKUP
+# ============================================================================
+
+backup() {
+    local name="${1:-manual}"
+    local timestamp
+    local destination
+
+    timestamp="$(date +%Y%m%d-%H%M%S)"
+    destination="${BACKUP_DIR}/${timestamp}-${name}"
+
+    net_detect
+
+    run mkdir -p "$destination"
+
+    (( DRY_RUN )) && return 0
+
+    cat >"${destination}/manifest.txt" <<MANIFEST
+IA-SERVER BACKUP
+================
+Version=${SCRIPT_VERSION}
+Date=$(date '+%F %T')
+Hostname=$(hostname)
+IP=${LAN_IP}
+CIDR=${LAN_CIDR}
+Gateway=${GATEWAY}
+MANIFEST
+
+    local files=(
+        "$CONFIG_FILE"
+        "/etc/samba/smb.conf"
+        "/etc/ufw/user.rules"
+        "/etc/ufw/user6.rules"
+        "$DNSMASQ_CONF"
+        "$DNSMASQ_RECORDS"
+        "/etc/fail2ban/jail.d/ia-server.local"
+        "/etc/apt/apt.conf.d/52ia-server-unattended"
+        "/etc/sysctl.d/99-ia-server.conf"
+        "/etc/systemd/journald.conf.d/ia-server.conf"
+        "/etc/systemd/system/omniroute.service"
+        "/etc/systemd/system/ollama.service.d/override.conf"
     )
 
-    local service
+    for file in "${files[@]}"; do
+        [[ -e "$file" ]] &&
+            cp -a "$file" "$destination/" ||
+            true
+    done
 
-    for service in "${services[@]}"; do
+    apache2ctl -S >"${destination}/apache-vhosts.txt" 2>&1 || true
+    ss -lntup >"${destination}/ports.txt" || true
+    ip addr >"${destination}/ip.txt" || true
+    ip route >"${destination}/routes.txt" || true
+    ufw status numbered >"${destination}/ufw.txt" 2>&1 || true
+    systemctl list-units \
+        --type=service \
+        --state=running \
+        >"${destination}/services.txt" || true
 
-        if systemctl list-unit-files "${service}.service" \
-            --no-legend 2>/dev/null | grep -q "${service}.service"; then
+    if command_exists ollama; then
+        ollama list >"${destination}/ollama-models.txt" 2>&1 || true
+    fi
 
-            if systemctl is-active --quiet "$service"; then
+    ok "Backup creado: $destination"
+}
 
-                printf "${GREEN}%-25s ACTIVO${NC}\n" "$service"
+# ============================================================================
+# ESTADO
+# ============================================================================
 
-            else
+service_state() {
+    local service="$1"
 
-                printf "${RED}%-25s DETENIDO${NC}\n" "$service"
-            fi
+    if systemctl is-active --quiet "$service"; then
+        echo "ACTIVO"
+    elif systemctl list-unit-files "$service" >/dev/null 2>&1; then
+        echo "DETENIDO"
+    else
+        echo "NO-INSTALADO"
+    fi
+}
 
-        else
+http_ok() {
+    curl -fsS --max-time 5 "$1" >/dev/null 2>&1
+}
 
-            printf "${GRAY}%-25s NO INSTALADO${NC}\n" "$service"
-        fi
+port_state() {
+    local port="$1"
 
+    if ss -lntup 2>/dev/null |
+        grep -Eq ":${port}[[:space:]]"
+    then
+        echo "OPEN"
+    else
+        echo "CLOSED"
+    fi
+}
+
+status() {
+    net_detect
+
+    echo
+    echo "======================================================================"
+    echo " IA-SERVER STATUS v${SCRIPT_VERSION}"
+    echo "======================================================================"
+
+    printf 'Host     : %s\n' "$(hostname)"
+    printf 'IP       : %s\n' "${LAN_IP:-N/D}"
+    printf 'Interface: %s\n' "${LAN_IFACE:-N/D}"
+    printf 'LAN      : %s\n' "${LAN_CIDR:-N/D}"
+    printf 'Gateway  : %s\n' "${GATEWAY:-N/D}"
+
+    echo
+    echo "---------------- SERVICES ----------------"
+
+    for service in \
+        ssh \
+        apache2 \
+        mysql \
+        "php${PHP_VERSION}-fpm" \
+        omniroute \
+        ollama \
+        smbd \
+        nmbd \
+        dnsmasq \
+        fail2ban
+    do
+        printf '%-24s %s\n' \
+            "$service" \
+            "$(service_state "$service")"
     done
 
     echo
+    echo "---------------- PORTS ----------------"
+
+    for port in \
+        22 \
+        53 \
+        80 \
+        443 \
+        139 \
+        445 \
+        "$OMNI_PORT" \
+        "$OLLAMA_PORT"
+    do
+        printf '%-8s %s\n' \
+            "$port" \
+            "$(port_state "$port")"
+    done
+
+    echo
+    echo "---------------- APIS ----------------"
+
+    if http_ok "http://127.0.0.1:${OLLAMA_PORT}/api/tags"; then
+        echo "Ollama API       : OK"
+    else
+        echo "Ollama API       : ERROR"
+    fi
+
+    if http_ok "http://127.0.0.1:${OMNI_PORT}/v1/models"; then
+        echo "OmniRoute API    : OK"
+    else
+        echo "OmniRoute API    : ERROR"
+    fi
+
+    echo
+    echo "---------------- BINDS ----------------"
+
+    printf 'OmniRoute : %s:%s\n' "$OMNI_BIND" "$OMNI_PORT"
+    printf 'Ollama    : %s:%s\n' "$OLLAMA_BIND" "$OLLAMA_PORT"
+    printf 'DNS       : %s:53\n' "${LAN_IP:-N/D}"
+    printf 'Samba     : %s\n' "$SAMBA_SHARE_PATH"
+
+    echo
+    echo "---------------- OLLAMA MODELS ----------------"
+
+    if command_exists ollama; then
+        ollama list 2>/dev/null || true
+    else
+        echo "Ollama no instalado."
+    fi
 }
 
-# ============================================================
+# ============================================================================
 # DIAGNÓSTICO
-# ============================================================
+# ============================================================================
 
-diagnostics() {
-
-    echo
-    echo "============================================================"
-    echo " DIAGNÓSTICO IA-SERVER"
-    echo "============================================================"
-    echo
-
-    echo "Hostname:"
-    hostname
+diagnose() {
+    status
 
     echo
-    echo "Sistema:"
-    cat /etc/os-release |
-        grep -E '^(PRETTY_NAME|VERSION_ID)='
+    echo "================ CPU / RAM / DISCO ================"
 
-    echo
-    echo "Kernel:"
-    uname -a
-
-    echo
-    echo "CPU:"
     lscpu |
-        grep -E 'Model name|CPU\(s\)|Thread|Core|Socket' ||
+        grep -E 'Model name|CPU\(s\)|Core|Socket' ||
         true
 
     echo
-    echo "RAM:"
     free -h
 
     echo
-    echo "Disco:"
-    df -h /
+    df -hT
 
     echo
-    echo "IP:"
-    get_lan_ip
+    echo "================ RED ================"
+
+    ip -br addr
+    echo
+    ip route
 
     echo
-    echo "Puertos:"
-    ss -lntp 2>/dev/null |
-        grep -E ':(22|80|443|3306|20128|11434)\b' ||
-        true
+    echo "================ APACHE ================"
+
+    apache2ctl configtest
+    apache2ctl -S 2>&1 || true
 
     echo
-    echo "Servicios:"
-    service_status
+    echo "================ DNS ================"
+
+    dnsmasq --test 2>&1 || true
+    dns_status || true
 
     echo
-    echo "Firewall:"
-    ufw status verbose || true
+    echo "================ UFW ================"
+
+    ufw status verbose 2>&1 || true
 
     echo
-    echo "Ollama:"
-    ollama list 2>/dev/null || true
+    echo "================ FAIL2BAN ================"
+
+    fail2ban-client status 2>&1 || true
 
     echo
-    echo "OmniRoute:"
-    systemctl is-active omniroute 2>/dev/null || true
+    echo "================ SYSTEMD OMNIROUTE ================"
+
+    systemctl --no-pager --full status omniroute 2>&1 | tail -50 || true
+
+    echo
+    echo "================ SYSTEMD OLLAMA ================"
+
+    systemctl --no-pager --full status ollama 2>&1 | tail -50 || true
+
+    echo
+    echo "================ LOG ================"
+
+    tail -100 "$LOG_FILE" 2>/dev/null || true
 }
 
-# ============================================================
-# INFORMACIÓN SERVIDOR
-# ============================================================
+# ============================================================================
+# INTEGRATION TEST
+# ============================================================================
 
-server_information() {
+test_tcp() {
+    local host="$1"
+    local port="$2"
 
-    local ip
-    ip="$(get_lan_ip)"
-
-    echo
-    echo "============================================================"
-    echo " INFORMACIÓN DEL SERVIDOR"
-    echo "============================================================"
-    echo
-
-    echo "Nombre:"
-    echo "  $(hostname)"
-
-    echo
-    echo "IP LAN:"
-    echo "  ${ip}"
-
-    echo
-    echo "Sistema:"
-    echo "  Ubuntu Server 24.04 LTS"
-
-    echo
-    echo "Kernel:"
-    echo "  $(uname -r)"
-
-    echo
-    echo "CPU:"
-    lscpu |
-        grep 'Model name' |
-        head -1 |
-        sed 's/^[[:space:]]*//'
-
-    echo
-    echo "CPU lógicas:"
-    nproc
-
-    echo
-    echo "RAM:"
-    free -h |
-        awk '/Mem:/ {print $2}'
-
-    echo
-    echo "Disco raíz:"
-    df -h / |
-        awk 'NR==2 {print $2 " total / " $4 " disponible"}'
-
-    echo
-    echo "PHP:"
-    php -v 2>/dev/null |
-        head -1 ||
-        true
-
-    echo
-    echo "Node:"
-    node --version 2>/dev/null || true
-
-    echo
-    echo "MySQL:"
-    mysql --version 2>/dev/null || true
-
-    echo
-    echo "Ollama:"
-    ollama --version 2>/dev/null || true
-
-    echo
-    echo "OmniRoute:"
-    omniroute --version 2>/dev/null || true
-
-    echo
-    echo "llmfit:"
-    llmfit --version 2>/dev/null || true
-
-    echo
-    echo "Endpoints:"
-    echo "  OmniRoute : http://${ip}:${OMNI_PORT}"
-    echo "  Ollama    : http://${OLLAMA_HOST_DEFAULT}:${OLLAMA_PORT}"
-    echo "  Apache    : http://${ip}/"
-    echo "  phpMyAdmin: http://${ip}/phpmyadmin"
+    timeout 3 bash -c \
+        "</dev/tcp/${host}/${port}" \
+        >/dev/null 2>&1
 }
 
-# ============================================================
-# IP LAN
-# ============================================================
-
-get_lan_ip() {
-
-    local ip=""
-
-    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-
-    if [[ -z "$ip" ]]; then
-
-        ip="$(
-            ip -4 route get 1.1.1.1 2>/dev/null |
-                awk '/src/ {
-                    for(i=1;i<=NF;i++)
-                        if($i=="src")
-                            print $(i+1);
-                    exit
-                }'
-        )"
-    fi
-
-    if [[ -z "$ip" ]]; then
-        ip="N/D"
-    fi
-
-    echo "$ip"
-}
-
-# ============================================================
-# INSTALACIÓN COMPLETA
-# ============================================================
-
-full_install() {
+test_all() {
+    net_detect
 
     echo
-    echo "============================================================"
-    echo " INSTALACIÓN COMPLETA IA-SERVER"
-    echo "============================================================"
-    echo
-
-    if ! confirm "¿Iniciar instalación completa?"; then
-
-        warning "Instalación cancelada."
-
-        return 0
-    fi
-
-    log "INICIO INSTALACION COMPLETA"
-
-    prepare_directories
-
-    install_base_packages
-
-    configure_system_identity
-
-    apt_upgrade
-
-    install_apache
-
-    install_php_versions
-
-    install_mysql
-
-    install_phpmyadmin
-
-    install_node
-
-    install_omniroute
-
-    install_ollama
-
-    install_llmfit
-
-    configure_firewall
-
-    optimize_system
-
-    systemctl daemon-reload
+    echo "======================================================================"
+    echo " INTEGRATION TEST"
+    echo "======================================================================"
 
     echo
-    echo "============================================================"
-    echo " INSTALACIÓN COMPLETADA"
-    echo "============================================================"
-    echo
+    echo "HTTP:"
 
-    success "IA-SERVER fue instalado correctamente."
+    local urls=(
+        "http://127.0.0.1:${OLLAMA_PORT}/api/tags"
+        "http://127.0.0.1:${OMNI_PORT}/v1/models"
+        "http://127.0.0.1/"
+    )
 
-    server_information
+    local url
 
-    echo
-    echo "IMPORTANTE:"
-    echo
-    echo "OmniRoute:"
-    echo "  http://$(get_lan_ip):${OMNI_PORT}"
-    echo
-    echo "Ollama:"
-    echo "  http://${OLLAMA_HOST_DEFAULT}:${OLLAMA_PORT}"
-    echo
-    echo "phpMyAdmin:"
-    echo "  http://$(get_lan_ip)/phpmyadmin"
-    echo
-
-    log "FIN INSTALACION COMPLETA"
-
-    pause_screen
-}
-
-# ============================================================
-# HEADER
-# ============================================================
-
-show_header() {
-
-    clear 2>/dev/null || true
-
-    echo
-    echo -e "${CYAN}======================================================================${NC}"
-    echo -e "${WHITE}                           IA-SERVER${NC}"
-    echo -e "${CYAN}======================================================================${NC}"
-    echo
-    echo -e "${WHITE}PCCURICO SPA${NC}"
-    echo
-    echo "Ubuntu Server 24.04 LTS"
-    echo "LAMP + OmniRoute + Ollama + llmfit"
-    echo
-    echo -e "${GRAY}Versión instalador: ${SCRIPT_VERSION}${NC}"
-    echo
-}
-
-# ============================================================
-# MENÚ PRINCIPAL
-# ============================================================
-
-main_menu() {
-
-    local option=""
-    local ip=""
-
-    while true; do
-
-        show_header
-
-        ip="$(get_lan_ip)"
-
-        echo "Servidor : $(hostname)"
-        echo "IP LAN   : ${ip}"
-        echo
-
-        printf '%*s\n' 72 '' | tr ' ' '-'
-
-        echo
-        echo "  1) Instalación completa"
-        echo
-        echo "  2) Preparación del servidor"
-        echo "  3) Apache2"
-        echo "  4) PHP 8.3"
-        echo "  5) MySQL"
-        echo "  6) Administración MySQL"
-        echo "  7) phpMyAdmin"
-        echo "  8) Crear Virtual Host"
-        echo
-        echo "  9) Node.js"
-        echo " 10) OmniRoute"
-        echo " 11) Estado OmniRoute"
-        echo " 12) Ollama"
-        echo " 13) Estado Ollama"
-        echo " 14) Descargar modelo Ollama"
-        echo
-        echo " 15) llmfit"
-        echo " 16) Hardware llmfit"
-        echo " 17) Recomendaciones llmfit"
-        echo " 18) Modelos coding llmfit"
-        echo " 19) Benchmark llmfit"
-        echo
-        echo " 20) Firewall LAN"
-        echo " 21) Swap"
-        echo " 22) Optimización sistema"
-        echo " 23) Estado servicios"
-        echo " 24) Diagnóstico"
-        echo " 25) Información del servidor"
-        echo
-        echo "  0) Salir"
-        echo
-
-        # IMPORTANTE:
-        # Leer desde /dev/tty mediante FD 3.
-        # Esto permite utilizar:
-        #
-        # curl URL | sudo bash
-        #
-        # sin que read reciba EOF del pipe.
-
-        if ! read -r -u "$TTY_FD" \
-            -p "Selecciona una opción: " option; then
-
-            echo
-
-            warning "No se pudo leer la entrada de la terminal."
-
-            return 1
+    for url in "${urls[@]}"; do
+        if http_ok "$url"; then
+            echo "OK   $url"
+        else
+            echo "FAIL $url"
         fi
+    done
+
+    echo
+    echo "TCP LAN:"
+
+    if [[ -n "$LAN_IP" ]]; then
+        local ports=(
+            53
+            80
+            443
+            445
+        )
+
+        [[ "$OMNI_BIND" != "127.0.0.1" ]] &&
+            ports+=("$OMNI_PORT")
+
+        [[ "$OLLAMA_BIND" != "127.0.0.1" ]] &&
+            ports+=("$OLLAMA_PORT")
+
+        local port
+
+        for port in "${ports[@]}"; do
+            if test_tcp "$LAN_IP" "$port"; then
+                echo "OPEN  ${LAN_IP}:${port}"
+            else
+                echo "CLOSED ${LAN_IP}:${port}"
+            fi
+        done
+    fi
+
+    echo
+    echo "DNS:"
+
+    dns_test || true
+
+    echo
+    echo "Samba:"
+
+    if command_exists smbclient; then
+        smbclient -L localhost -N 2>&1 || true
+    fi
+
+    echo
+    echo "RESULTADO: pruebas finalizadas."
+}
+
+# ============================================================================
+# REPARACIÓN
+# ============================================================================
+
+repair() {
+    echo
+    echo "======================================================================"
+    echo " IA-SERVER REPAIR"
+    echo "======================================================================"
+
+    net_detect
+
+    backup repair-before
+
+    info "Reparando servicios y configuraciones gestionadas..."
+
+    if component_done apache; then
+        apache_install
+    fi
+
+    if component_done php; then
+        php_install
+    fi
+
+    if component_done mysql; then
+        mysql_install
+    fi
+
+    if component_done omniroute; then
+        omni_install
+    fi
+
+    if component_done ollama; then
+        ollama_install
+    fi
+
+    if component_done samba; then
+        samba_www
+    fi
+
+    if component_done dns; then
+        dns_install
+        dns_import_vhosts
+    fi
+
+    if component_done security; then
+        security
+    fi
+
+    if component_done firewall; then
+        firewall
+    fi
+
+    if component_done optimize; then
+        optimize
+    fi
+
+    run systemctl daemon-reload
+
+    ok "Proceso de reparación terminado."
+
+    status
+}
+
+# ============================================================================
+# REMOVE MANAGED
+# ============================================================================
+
+remove_managed() {
+    echo
+    warn "Esto elimina solamente configuraciones gestionadas por IA-SERVER."
+    warn "No desinstala paquetes ni elimina bases de datos."
+    warn "No elimina /var/www ni modelos de Ollama."
+
+    yesno "¿Continuar?" || return
+
+    backup before-remove
+
+    run rm -f \
+        "$DNSMASQ_CONF" \
+        "$DNSMASQ_RECORDS" \
+        /etc/systemd/system/omniroute.service \
+        /etc/systemd/system/ollama.service.d/override.conf \
+        /etc/fail2ban/jail.d/ia-server.local \
+        /etc/apt/apt.conf.d/52ia-server-unattended \
+        /etc/sysctl.d/99-ia-server.conf \
+        /etc/systemd/journald.conf.d/ia-server.conf
+
+    run systemctl daemon-reload
+
+    if service_exists dnsmasq; then
+        run systemctl restart dnsmasq || true
+    fi
+
+    if service_exists fail2ban; then
+        run systemctl restart fail2ban || true
+    fi
+
+    run sysctl --system || true
+
+    ok "Configuración gestionada retirada."
+}
+
+# ============================================================================
+# FULL INSTALL
+# ============================================================================
+
+full() {
+    yesno "¿Ejecutar instalación completa?" || return
+
+    prepare
+    load_config
+
+    info "Iniciando IA-SERVER Professional ${SCRIPT_VERSION}"
+
+    base_install
+    identity
+    save_config
+
+    info "Actualizando sistema..."
+    run apt-get upgrade -y
+
+    apache_install
+    php_install
+    mysql_install
+    phpmyadmin_install
+
+    node_install
+
+    omni_install
+    ollama_install
+
+    llmfit_install
+
+    samba_www
+
+    dns_install
+    dns_import_vhosts
+
+    security
+    firewall
+
+    swap_config
+    optimize
+
+    certbot_install
+
+    backup full-install
+
+    status
+
+    echo
+    echo "======================================================================"
+    echo " INSTALACIÓN COMPLETA FINALIZADA"
+    echo "======================================================================"
+
+    ok "IA-SERVER Professional ${SCRIPT_VERSION} instalado."
+}
+
+# ============================================================================
+# MENU
+# ============================================================================
+
+menu() {
+    local option=""
+
+    while :; do
+        clear 2>/dev/null || true
+
+        net_detect
+
+        echo -e "${CYAN}======================================================================${NC}"
+        echo -e "${WHITE} IA-SERVER ADMIN v${SCRIPT_VERSION}${NC}"
+        echo -e "${CYAN}======================================================================${NC}"
+
+        echo "Host=$(hostname)"
+        echo "IP=${LAN_IP:-N/D}"
+        echo "LAN=${LAN_CIDR:-N/D}"
+        echo "Gateway=${GATEWAY:-N/D}"
+
+        echo
+        cat <<'MENU'
+ 1  Instalación completa
+ 2  Base / identidad
+ 3  Apache / VirtualHost
+ 4  PHP-FPM
+ 5  MySQL
+ 6  Administración MySQL
+ 7  phpMyAdmin
+ 8  Node.js
+ 9  OmniRoute
+10  Bind OmniRoute
+11  Estado OmniRoute
+12  Ollama
+13  Bind / contexto Ollama
+14  Descargar modelo Ollama
+15  Listar modelos Ollama
+16  llmfit
+17  Samba [www]
+18  Usuarios Samba
+19  DNS local / VirtualHosts
+20  Estado DNS
+21  Firewall UFW
+22  Seguridad
+23  Swap
+24  Optimización
+25  Certbot / HTTPS
+26  Backup
+27  Estado general
+28  Diagnóstico
+29  Pruebas integración
+30  Reparar instalación
+31  Retirar configuración gestionada
+ 0  Salir
+MENU
+
+        read -r -u "$TTY_FD" -p "Opción: " option || return
 
         case "$option" in
-
             1)
-                full_install
+                full
                 ;;
-
             2)
-                install_base_packages
-                configure_system_identity
-                pause_screen
+                base_install
+                identity
                 ;;
-
             3)
-                install_apache
-                pause_screen
+                apache_install
+                vhost_create
                 ;;
-
             4)
-                install_php_versions
-                pause_screen
+                php_install
                 ;;
-
             5)
-                install_mysql
-                pause_screen
+                mysql_install
                 ;;
-
             6)
-                mysql_management_menu
+                mysql_menu
                 ;;
-
             7)
-                install_phpmyadmin
-                pause_screen
+                phpmyadmin_install
                 ;;
-
             8)
-                create_virtual_host
-                pause_screen
+                node_install
                 ;;
-
             9)
-                install_node
-                pause_screen
+                omni_install
                 ;;
-
             10)
-                install_omniroute
-                pause_screen
+                omni_bind
                 ;;
-
             11)
-                omniroute_status
-                pause_screen
+                omni_health
                 ;;
-
             12)
-                install_ollama
-                pause_screen
+                ollama_install
                 ;;
-
             13)
-                ollama_status
-                pause_screen
+                ollama_bind
                 ;;
-
             14)
-                download_ollama_model
-                pause_screen
+                model_pull
                 ;;
-
             15)
-                install_llmfit
-                pause_screen
+                model_list
                 ;;
-
             16)
-                llmfit_hardware
-                pause_screen
+                llmfit_menu
                 ;;
-
             17)
-                llmfit_recommendations
-                pause_screen
+                samba_www
                 ;;
-
             18)
-                llmfit_coding
-                pause_screen
+                samba_users
                 ;;
-
             19)
-                llmfit_benchmark
-                pause_screen
+                dns_install
+                dns_import_vhosts
+                dns_status
                 ;;
-
             20)
-                configure_firewall
-                pause_screen
+                dns_status
                 ;;
-
             21)
-                configure_swap
-                pause_screen
+                firewall
                 ;;
-
             22)
-                optimize_system
-                pause_screen
+                security
                 ;;
-
             23)
-                service_status
-                pause_screen
+                swap_config
                 ;;
-
             24)
-                diagnostics
-                pause_screen
+                optimize
                 ;;
-
             25)
-                server_information
-                pause_screen
+                certbot_install
                 ;;
-
+            26)
+                backup manual
+                ;;
+            27)
+                status
+                ;;
+            28)
+                diagnose
+                ;;
+            29)
+                test_all
+                ;;
+            30)
+                repair
+                ;;
+            31)
+                remove_managed
+                ;;
             0)
-                echo
-                success "IA-SERVER finalizado."
-                exit 0
+                return
                 ;;
-
             *)
-                warning "Opción no válida: ${option}"
-                sleep 1
+                warn "Opción inválida."
                 ;;
-
         esac
 
+        pause
     done
 }
 
-# ============================================================
-# INSTALACIÓN NO INTERACTIVA
-# ============================================================
+# ============================================================================
+# HELP
+# ============================================================================
 
-noninteractive_install() {
-
-    echo
-    echo "============================================================"
-    echo " INSTALACIÓN AUTOMÁTICA IA-SERVER"
-    echo "============================================================"
-    echo
-
-    prepare_directories
-    install_base_packages
-    configure_system_identity
-    apt_upgrade
-    install_apache
-    install_php_versions
-    install_mysql
-    install_phpmyadmin
-    install_node
-    install_omniroute
-    install_ollama
-    install_llmfit
-    configure_firewall
-    optimize_system
-
-    echo
-    success "Instalación automática completada."
-
-    server_information
-}
-
-# ============================================================
-# AYUDA
-# ============================================================
-
-show_help() {
-
-    cat <<EOF
-
-IA-SERVER
-PCCURICO SPA
-
-Versión: ${SCRIPT_VERSION}
+help() {
+    cat <<HELP
+IA-SERVER Professional Admin Installer
+Version: ${SCRIPT_VERSION}
 
 Uso:
 
   sudo bash ${SCRIPT_NAME}
 
-  curl -fsSL https://raw.githubusercontent.com/pccurico/install/refs/heads/master/ia-server_lamp_ollama.sh | sudo bash
-
-Instalación automática:
+Instalación completa:
 
   sudo bash ${SCRIPT_NAME} --install
 
-Opciones:
+Estado:
 
-  --install       Instalación completa sin menú
-  --menu          Abrir menú interactivo
-  --help          Mostrar esta ayuda
-  --version       Mostrar versión
+  sudo bash ${SCRIPT_NAME} --status
+
+Diagnóstico:
+
+  sudo bash ${SCRIPT_NAME} --diagnose
+
+Pruebas:
+
+  sudo bash ${SCRIPT_NAME} --test
+
+Backup:
+
+  sudo bash ${SCRIPT_NAME} --backup
+
+Reparación:
+
+  sudo bash ${SCRIPT_NAME} --repair
+
+Dry-run:
+
+  sudo bash ${SCRIPT_NAME} --dry-run --install
+
+Ayuda:
+
+  sudo bash ${SCRIPT_NAME} --help
+
+Versión:
+
+  sudo bash ${SCRIPT_NAME} --version
 
 Componentes:
 
-  Apache2
-  PHP ${PHP_VERSION}
-  PHP-FPM
+  Apache
+  PHP-FPM ${PHP_VERSION}
   MySQL
   phpMyAdmin
   Node.js ${NODE_MAJOR}
   OmniRoute
   Ollama
   llmfit
+  Samba
+  dnsmasq
   UFW
-  SSH
+  fail2ban
+  Certbot
+  Swap
+  sysctl
+  journald
 
-Puertos:
+Servicios principales:
 
-  22       SSH
-  80       HTTP
-  443      HTTPS
-  ${OMNI_PORT}     OmniRoute LAN
-  ${OLLAMA_PORT}   Ollama localhost
+  OmniRoute : ${OMNI_PORT}
+  Ollama    : ${OLLAMA_PORT}
+  DNS       : 53
+  HTTP      : 80
+  HTTPS     : 443
+  Samba     : 139/445
 
-Administración MySQL:
+Configuración:
 
-  - Crear BD independiente
-  - Crear usuario independiente
-  - Crear BD + usuario
-  - ALL PRIVILEGES sobre una BD
-  - ALL PRIVILEGES sobre todas las BD
-  - WITH GRANT OPTION
-  - Revocar privilegios
-  - Mostrar GRANTS
-  - Listar usuarios
-  - Listar bases de datos
-  - Eliminar usuarios
-  - Eliminar bases de datos
+  ${CONFIG_FILE}
 
-EOF
+Estado:
+
+  ${STATE_DIR}
+
+Backups:
+
+  ${BACKUP_DIR}
+
+Log:
+
+  ${LOG_FILE}
+
+HELP
 }
 
-# ============================================================
-# VERSIÓN
-# ============================================================
-
-show_version() {
-
-    echo "${SCRIPT_NAME} ${SCRIPT_VERSION}"
-}
-
-# ============================================================
-# INICIO
-# ============================================================
+# ============================================================================
+# MAIN
+# ============================================================================
 
 main() {
-
     require_root
-    prepare_logging
-    setup_terminal
-    check_os
+    setup_tty
 
-    log "============================================================"
-    log "INICIO IA-SERVER"
-    log "Hostname: $(hostname)"
-    log "IP LAN: $(get_lan_ip)"
-    log "Script: ${SCRIPT_VERSION}"
-    log "============================================================"
+    if [[ "${1:-}" == "--dry-run" ]]; then
+        DRY_RUN=1
+        shift
+    fi
+
+    check_os
+    prepare
+    load_config
 
     case "${1:-}" in
-
         --install)
-            noninteractive_install
+            full
             ;;
 
-        --menu)
-            main_menu
+        --status)
+            status
+            ;;
+
+        --diagnose)
+            diagnose
+            ;;
+
+        --test)
+            test_all
+            ;;
+
+        --backup)
+            backup manual
+            ;;
+
+        --repair)
+            repair
+            ;;
+
+        --menu|'')
+            menu
             ;;
 
         --help|-h)
-            show_help
+            help
             ;;
 
         --version|-v)
-            show_version
-            ;;
-
-        "")
-            main_menu
+            echo "${SCRIPT_NAME} ${SCRIPT_VERSION}"
             ;;
 
         *)
-            error "Opción desconocida: $1"
-            show_help
-            exit 1
+            err "Opción desconocida: ${1:-}"
+            echo
+            help
+            exit 2
             ;;
-
     esac
 }
 
