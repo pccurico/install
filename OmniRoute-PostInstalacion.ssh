@@ -563,7 +563,7 @@ configure_firewall() {
 
     if [[ -z "$cidr" ]]; then
         warn "No se pudo determinar automaticamente la red LAN."
-        read -r -p "Ingrese CIDR LAN, ejemplo 192.168.1.0/24: " cidr
+        read -r -p "Ingrese CIDR LAN, ejemplo 192.168.2.0/24: " cidr
     fi
 
     if [[ -z "$cidr" ]]; then
