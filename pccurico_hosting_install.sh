@@ -1,69 +1,76 @@
 #!/usr/bin/env bash
+
 # ============================================================
-# PCCURICO HOSTING SERVER
-# Instalador profesional LAMP + herramientas
-#
-# Ubuntu Server 24.04.x
+# PCCURICO HOSTING
+# Instalador / Preparador del servidor de hosting
 #
 # Compatible con:
-#   curl -fsSL URL | sudo bash
+# Ubuntu Server 24.04.x
 #
-# Características:
-#   - Instalación idempotente
-#   - Reanudación por etapas
-#   - Detección robusta de MySQL/MariaDB
-#   - Detección de servicios existentes
-#   - Entrada interactiva mediante /dev/tty
-#   - Compatible con curl | bash
-#   - Protección de bases existentes
-#   - No elimina bases de datos
-#   - No guarda password root de MySQL
-#   - Logs
-#   - Diagnóstico
-#   - Verificación final
+# IMPORTANTE:
+# Este instalador está diseñado para servidores que YA tienen
+# servicios instalados.
+#
+# NO elimina:
+#   Apache
+#   PHP
+#   MySQL
+#   Node.js
+#   Ollama
+#   Cloudflare Tunnel
+#   Fail2ban
+#   n8n
+#   Open WebUI
+#   OmniRoute
+#   Samba
+#   dnsmasq
+#   XRDP
+#   VirtualHosts existentes
+#   Bases de datos existentes
+#
+# VERSION: 3.0.0
 # ============================================================
 
 set -Eeuo pipefail
-IFS=$'\n\t'
-
-# ============================================================
-# IDENTIDAD
-# ============================================================
 
 SCRIPT_NAME="pccurico_hosting_install.sh"
-VERSION="2.0.0"
+VERSION="3.0.0"
 
-# ============================================================
-# RUTAS
-# ============================================================
+# ------------------------------------------------------------
+# RUTAS PCCURICO
+# ------------------------------------------------------------
 
-STATE_DIR="/var/lib/pccurico-installer"
-STATE_FILE="${STATE_DIR}/state"
+PCCURICO_ETC="/etc/pccurico"
+PCCURICO_STATE_DIR="/var/lib/pccurico-hosting"
+PCCURICO_LOG_DIR="/var/log/pccurico"
+PCCURICO_BACKUP_DIR="/var/backups/pccurico-hosting"
 
-LOG_DIR="/var/log/pccurico"
-LOG_FILE="${LOG_DIR}/installer.log"
+STATE_FILE="${PCCURICO_STATE_DIR}/state"
+LOG_FILE="${PCCURICO_LOG_DIR}/hosting_install.log"
+LOCK_FILE="/run/pccurico-hosting-install.lock"
 
-CONFIG_DIR="/etc/pccurico"
-DB_CONFIG="${CONFIG_DIR}/database.conf"
+# ------------------------------------------------------------
+# VARIABLES
+# ------------------------------------------------------------
 
-LOCK_FILE="/var/run/pccurico-hosting-install.lock"
+MYSQL_CLIENT=""
+MYSQL_SERVICE=""
+PHP_VERSION=""
+PHP_FPM_SERVICE=""
 
-# ============================================================
-# CONFIGURACIÓN
-# ============================================================
-
-APP_DB_DEFAULT="pccurico"
-APP_DB_USER_DEFAULT="pccurico"
+DB_HOST=""
+DB_NAME=""
+DB_USER=""
+DB_PASSWORD=""
 
 MYSQL_ROOT_PASSWORD=""
-MYSQL_AUTH_MODE=""
 
-MYSQL_SERVICE=""
-MYSQL_CLIENT=""
+ERROR_LINE=""
+ERROR_COMMAND=""
 
-# ============================================================
+# ------------------------------------------------------------
 # COLORES
-# ============================================================
+# ------------------------------------------------------------
 
 if [[ -t 1 ]]; then
     RED='\033[0;31m'
@@ -71,119 +78,110 @@ if [[ -t 1 ]]; then
     YELLOW='\033[1;33m'
     BLUE='\033[0;34m'
     CYAN='\033[0;36m'
-    MAGENTA='\033[0;35m'
-    NC='\033[0m'
+    WHITE='\033[1;37m'
+    RESET='\033[0m'
 else
     RED=''
     GREEN=''
     YELLOW=''
     BLUE=''
     CYAN=''
-    MAGENTA=''
-    NC=''
+    WHITE=''
+    RESET=''
 fi
 
-# ============================================================
+# ------------------------------------------------------------
 # FUNCIONES DE SALIDA
-# ============================================================
+# ------------------------------------------------------------
 
-timestamp() {
-    date '+%Y-%m-%d %H:%M:%S'
+print_line() {
+    printf '%s\n' "============================================================"
+}
+
+title() {
+    printf '\n'
+    print_line
+    printf '%b%s%b\n' "$CYAN" "$1" "$RESET"
+    print_line
 }
 
 info() {
-    echo -e "${BLUE}[INFO]${NC} $*"
+    printf '%b[INFO]%b %s\n' "$BLUE" "$RESET" "$1"
 }
 
 ok() {
-    echo -e "${GREEN}[OK]${NC} $*"
+    printf '%b[OK]%b %s\n' "$GREEN" "$RESET" "$1"
 }
 
 warn() {
-    echo -e "${YELLOW}[AVISO]${NC} $*"
+    printf '%b[WARN]%b %s\n' "$YELLOW" "$RESET" "$1"
 }
 
 error() {
-    echo -e "${RED}[ERROR]${NC} $*" >&2
-}
-
-step() {
-    echo
-    echo -e "${CYAN}============================================================${NC}"
-    echo -e "${CYAN}$*${NC}"
-    echo -e "${CYAN}============================================================${NC}"
+    printf '%b[ERROR]%b %s\n' "$RED" "$RESET" "$1"
 }
 
 die() {
-    error "$*"
+    error "$1"
     exit 1
 }
 
-# ============================================================
-# LOG
-# ============================================================
-
-prepare_directories() {
-    mkdir -p "$STATE_DIR"
-    mkdir -p "$LOG_DIR"
-    mkdir -p "$CONFIG_DIR"
-
-    chmod 700 "$STATE_DIR"
-    chmod 750 "$LOG_DIR"
-    chmod 700 "$CONFIG_DIR"
-
-    touch "$LOG_FILE"
-    chmod 600 "$LOG_FILE"
-}
-
-log_message() {
-    printf '[%s] %s\n' "$(timestamp)" "$*" >> "$LOG_FILE"
-}
-
-# ============================================================
-# NO LOGUEAR SECRETOS
-# ============================================================
+# ------------------------------------------------------------
+# LOG SEGURO
+# ------------------------------------------------------------
 
 log_safe() {
     local message="$*"
+    local root_password="${MYSQL_ROOT_PASSWORD:-}"
+    local db_password="${DB_PASSWORD:-}"
 
-    message="${message//${MYSQL_ROOT_PASSWORD}/[MYSQL_ROOT_PASSWORD]}"
-
-    if [[ -n "${DB_PASSWORD:-}" ]]; then
-        message="${message//${DB_PASSWORD}/[DB_PASSWORD]}"
+    if [[ -n "$root_password" ]]; then
+        message="${message//$root_password/[REDACTED]}"
     fi
 
-    log_message "$message"
+    if [[ -n "$db_password" ]]; then
+        message="${message//$db_password/[REDACTED]}"
+    fi
+
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$message" >> "$LOG_FILE"
 }
 
-# ============================================================
-# TRAPS
-# ============================================================
+# ------------------------------------------------------------
+# LIMPIEZA
+# ------------------------------------------------------------
 
 cleanup() {
-    unset MYSQL_ROOT_PASSWORD 2>/dev/null || true
-}
+    MYSQL_ROOT_PASSWORD=""
+    DB_PASSWORD=""
 
-on_error() {
-    local line="$1"
-    local command="$2"
-
-    error "Error en línea ${line}."
-    error "Comando: ${command}"
-    error "La instalación se detuvo para evitar modificaciones incompletas."
-    error "El estado anterior se conserva."
-    error "Puedes volver a ejecutar el instalador."
-
-    log_safe "ERROR línea=${line}"
-    log_safe "ERROR comando=${command}"
+    rm -f "$LOCK_FILE" 2>/dev/null || true
 }
 
 trap cleanup EXIT
+
+# ------------------------------------------------------------
+# ERRORES
+# ------------------------------------------------------------
+
+on_error() {
+    ERROR_LINE="${1:-unknown}"
+    ERROR_COMMAND="${2:-unknown}"
+
+    error "Se produjo un error en línea ${ERROR_LINE}."
+    error "Comando: ${ERROR_COMMAND}"
+
+    log_safe "ERROR línea=${ERROR_LINE} comando=${ERROR_COMMAND}"
+
+    printf '\n'
+    warn "No se eliminará ni revertirá información existente."
+    warn "El estado conseguido hasta este punto permanece intacto."
+}
+
 trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
 
-# ============================================================
+# ------------------------------------------------------------
 # ROOT
-# ============================================================
+# ------------------------------------------------------------
 
 require_root() {
     if [[ "${EUID}" -ne 0 ]]; then
@@ -191,1741 +189,1096 @@ require_root() {
     fi
 }
 
-# ============================================================
+# ------------------------------------------------------------
 # LOCK
-# ============================================================
+# ------------------------------------------------------------
 
 acquire_lock() {
 
     if [[ -f "$LOCK_FILE" ]]; then
-        local old_pid
+
+        local old_pid=""
 
         old_pid="$(cat "$LOCK_FILE" 2>/dev/null || true)"
 
-        if [[ -n "$old_pid" ]] &&
-           kill -0 "$old_pid" 2>/dev/null; then
-
-            die "Ya existe otra instancia del instalador ejecutándose. PID: ${old_pid}"
+        if [[ "$old_pid" =~ ^[0-9]+$ ]]; then
+            if kill -0 "$old_pid" 2>/dev/null; then
+                die "Ya existe otra instalación ejecutándose. PID: $old_pid"
+            fi
         fi
 
-        warn "Se encontró un archivo de bloqueo antiguo. Será eliminado."
         rm -f "$LOCK_FILE"
     fi
 
-    echo "$$" > "$LOCK_FILE"
-
-    trap 'rm -f "$LOCK_FILE" 2>/dev/null || true' EXIT
+    printf '%s\n' "$$" > "$LOCK_FILE"
 }
 
-# ============================================================
-# ENTRADA INTERACTIVA
-#
-# IMPORTANTE:
-# /dev/tty permite que funcione:
-#
-# curl URL | sudo bash
-# ============================================================
+# ------------------------------------------------------------
+# DIRECTORIOS
+# ------------------------------------------------------------
 
-read_input() {
-    local prompt="$1"
-    local variable="$2"
-    local default="${3:-}"
+prepare_directories() {
 
-    local value=""
+    mkdir -p "$PCCURICO_ETC"
+    mkdir -p "$PCCURICO_STATE_DIR"
+    mkdir -p "$PCCURICO_LOG_DIR"
+    mkdir -p "$PCCURICO_BACKUP_DIR"
 
-    if [[ ! -r /dev/tty ]]; then
-        die "No existe una terminal interactiva disponible (/dev/tty)."
-    fi
+    chmod 700 "$PCCURICO_ETC"
+    chmod 750 "$PCCURICO_STATE_DIR"
+    chmod 750 "$PCCURICO_LOG_DIR"
+    chmod 700 "$PCCURICO_BACKUP_DIR"
 
-    if [[ -n "$default" ]]; then
-        read -r -p "${prompt} [${default}]: " value </dev/tty
-        value="${value:-$default}"
-    else
-        read -r -p "${prompt}: " value </dev/tty
-    fi
+    touch "$LOG_FILE"
 
-    printf -v "$variable" '%s' "$value"
+    chmod 600 "$LOG_FILE"
 }
 
-read_password() {
-    local prompt="$1"
-    local variable="$2"
-
-    local value=""
-
-    if [[ ! -r /dev/tty ]]; then
-        die "No existe una terminal interactiva disponible (/dev/tty)."
-    fi
-
-    read -r -s -p "${prompt}: " value </dev/tty
-    echo
-
-    printf -v "$variable" '%s' "$value"
-}
-
-confirm() {
-    local prompt="$1"
-    local answer=""
-
-    read -r -p "${prompt} [s/N]: " answer </dev/tty
-
-    case "${answer,,}" in
-        s|si|sí|y|yes)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-# ============================================================
-# COMANDOS
-# ============================================================
-
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
-
-# ============================================================
+# ------------------------------------------------------------
 # ESTADO
-# ============================================================
+# ------------------------------------------------------------
 
 is_done() {
     local stage="$1"
 
-    [[ -f "$STATE_FILE" ]] &&
-        grep -qxF "$stage" "$STATE_FILE"
+    [[ -f "$STATE_FILE" ]] || return 1
+
+    grep -Fxq -- "$stage" "$STATE_FILE"
 }
 
 mark_done() {
+
     local stage="$1"
 
     touch "$STATE_FILE"
 
-    if ! is_done "$stage"; then
+    if ! grep -Fxq -- "$stage" "$STATE_FILE" 2>/dev/null; then
         printf '%s\n' "$stage" >> "$STATE_FILE"
     fi
-
-    log_safe "ETAPA COMPLETADA: ${stage}"
 }
 
-# ============================================================
-# APT
-# ============================================================
+# ------------------------------------------------------------
+# SISTEMA OPERATIVO
+# ------------------------------------------------------------
 
-apt_update() {
-    info "Actualizando índices APT..."
-    apt-get update
-}
+check_os() {
 
-apt_install() {
-    DEBIAN_FRONTEND=noninteractive \
-        apt-get install -y "$@"
-}
+    title "1. COMPROBACIÓN DEL SISTEMA"
 
-package_installed() {
-    dpkg-query -W -f='${Status}' "$1" 2>/dev/null |
-        grep -q "install ok installed"
-}
-
-# ============================================================
-# DETECCIÓN ROBUSTA DE MYSQL / MARIADB
-# ============================================================
-
-detect_mysql_client() {
-
-    MYSQL_CLIENT=""
-
-    local candidates=(
-        "/usr/bin/mysql"
-        "/usr/local/bin/mysql"
-        "/usr/bin/mariadb"
-        "/usr/local/bin/mariadb"
-    )
-
-    local candidate
-
-    for candidate in "${candidates[@]}"; do
-        if [[ -x "$candidate" ]]; then
-            MYSQL_CLIENT="$candidate"
-            return 0
-        fi
-    done
-
-    if command_exists mysql; then
-        MYSQL_CLIENT="$(command -v mysql)"
-        return 0
+    if [[ ! -f /etc/os-release ]]; then
+        die "No se pudo determinar el sistema operativo."
     fi
 
-    if command_exists mariadb; then
-        MYSQL_CLIENT="$(command -v mariadb)"
-        return 0
+    . /etc/os-release
+
+    printf 'Sistema       : %s\n' "${PRETTY_NAME:-desconocido}"
+    printf 'Arquitectura  : %s\n' "$(uname -m)"
+    printf 'Kernel        : %s\n' "$(uname -r)"
+
+    if [[ "${ID:-}" != "ubuntu" ]]; then
+        die "Este instalador requiere Ubuntu."
     fi
 
-    return 1
-}
+    if [[ "${VERSION_ID:-}" != "24.04" ]]; then
+        warn "La versión detectada es ${VERSION_ID:-desconocida}."
+        warn "El instalador fue diseñado para Ubuntu 24.04.x."
+    else
+        ok "Ubuntu 24.04.x detectado."
+    fi
 
-detect_mysql_service() {
+    local available_gb
 
-    MYSQL_SERVICE=""
-
-    local candidates=(
-        mysql
-        mysqld
-        mariadb
-    )
-
-    local service
-
-    for service in "${candidates[@]}"; do
-
-        if systemctl list-unit-files \
-            "${service}.service" \
-            --no-legend \
-            >/dev/null 2>&1; then
-
-            if systemctl cat "${service}.service" \
-                >/dev/null 2>&1; then
-
-                MYSQL_SERVICE="$service"
-                return 0
-            fi
-        fi
-    done
-
-    local discovered
-
-    discovered="$(
-        systemctl list-unit-files \
-            --type=service \
-            --no-legend 2>/dev/null |
-        awk '{print $1}' |
-        grep -Ei '^(mysql|mysqld|mariadb)(@.*)?\.service$' |
-        head -n 1 || true
+    available_gb="$(
+        df -BG / |
+        awk 'NR==2 {gsub(/G/,"",$4); print $4}'
     )"
 
-    if [[ -n "$discovered" ]]; then
-        MYSQL_SERVICE="${discovered%.service}"
-        return 0
-    fi
+    if [[ "$available_gb" =~ ^[0-9]+$ ]]; then
+        printf 'Espacio disponible: %s GB\n' "$available_gb"
 
-    return 1
-}
-
-detect_mysql_process() {
-
-    pgrep -x mysqld >/dev/null 2>&1 ||
-    pgrep -x mariadbd >/dev/null 2>&1
-}
-
-detect_mysql_socket() {
-
-    [[ -S /run/mysqld/mysqld.sock ]] ||
-    [[ -S /run/mariadb/mariadb.sock ]] ||
-    [[ -S /var/run/mysqld/mysqld.sock ]]
-}
-
-detect_mysql_datadir() {
-
-    [[ -d /var/lib/mysql ]]
-}
-
-mysql_server_detected() {
-
-    detect_mysql_client && return 0
-    detect_mysql_service && return 0
-    detect_mysql_process && return 0
-    detect_mysql_socket && return 0
-    detect_mysql_datadir && return 0
-
-    return 1
-}
-
-# ============================================================
-# INFORMACIÓN MYSQL
-# ============================================================
-
-show_mysql_detection() {
-
-    echo
-    echo "Detección MySQL/MariaDB:"
-    echo
-
-    if detect_mysql_client; then
-        echo "  [OK] Cliente : ${MYSQL_CLIENT}"
-    else
-        echo "  [--] Cliente : no encontrado"
-    fi
-
-    if detect_mysql_service; then
-        echo "  [OK] Servicio: ${MYSQL_SERVICE}"
-    else
-        echo "  [--] Servicio: no detectado"
-    fi
-
-    if detect_mysql_process; then
-        echo "  [OK] Proceso  : servidor activo"
-    else
-        echo "  [--] Proceso  : no detectado"
-    fi
-
-    if detect_mysql_socket; then
-        echo "  [OK] Socket   : detectado"
-    else
-        echo "  [--] Socket   : no detectado"
-    fi
-
-    if detect_mysql_datadir; then
-        echo "  [OK] Datadir  : /var/lib/mysql"
-    else
-        echo "  [--] Datadir  : no detectado"
-    fi
-
-    echo
-}
-
-# ============================================================
-# INICIAR MYSQL
-# ============================================================
-
-start_mysql_service() {
-
-    if [[ -z "$MYSQL_SERVICE" ]]; then
-        detect_mysql_service || true
-    fi
-
-    if [[ -n "$MYSQL_SERVICE" ]]; then
-
-        if systemctl is-active --quiet "$MYSQL_SERVICE"; then
-            ok "Servicio ${MYSQL_SERVICE} ya está activo."
-            return 0
+        if (( available_gb < 10 )); then
+            warn "Hay menos de 10 GB disponibles."
+        else
+            ok "Espacio disponible suficiente."
         fi
-
-        info "Iniciando ${MYSQL_SERVICE}..."
-
-        systemctl start "$MYSQL_SERVICE"
-
-        sleep 2
-
-        if systemctl is-active --quiet "$MYSQL_SERVICE"; then
-            ok "Servicio ${MYSQL_SERVICE} activo."
-            return 0
-        fi
-
-        warn "No fue posible confirmar ${MYSQL_SERVICE} como activo."
     fi
 
-    if detect_mysql_process || detect_mysql_socket; then
-        ok "El servidor MySQL/MariaDB responde mediante proceso/socket."
-        return 0
-    fi
-
-    return 1
+    mark_done "1-system"
 }
 
-# ============================================================
-# ETAPA 1
-# ============================================================
+# ------------------------------------------------------------
+# APACHE
+# ------------------------------------------------------------
 
-step_1_base() {
+detect_apache() {
 
-    if is_done "1-base"; then
-        info "Paso 1/10 ya completado."
-        return
-    fi
-
-    step "[1/10] Preparación del sistema"
-
-    apt_update
-
-    apt_install \
-        curl \
-        wget \
-        git \
-        unzip \
-        zip \
-        ca-certificates \
-        gnupg \
-        lsb-release \
-        software-properties-common \
-        apt-transport-https \
-        openssl \
-        nano \
-        vim \
-        htop \
-        net-tools \
-        ufw \
-        rsync \
-        acl \
-        jq \
-        tree \
-        cron \
-        logrotate
-
-    ok "Paquetes base instalados."
-
-    mark_done "1-base"
+    command -v apache2 >/dev/null 2>&1
 }
 
-# ============================================================
-# ETAPA 2 APACHE
-# ============================================================
+step_apache() {
 
-step_2_apache() {
+    title "2. APACHE"
 
-    if is_done "2-apache"; then
-        info "Paso 2/10 ya completado."
-        return
-    fi
+    if ! detect_apache; then
 
-    step "[2/10] Apache2"
+        warn "Apache no está instalado."
 
-    if package_installed apache2 || command_exists apache2; then
-        info "Apache2 ya está instalado."
+        info "Instalando Apache..."
+
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y apache2
+
     else
-        apt_update
-        apt_install apache2
+        ok "Apache ya está instalado."
+    fi
+
+    if ! systemctl is-active --quiet apache2; then
+
+        info "Apache no está activo. Iniciándolo..."
+
+        systemctl start apache2
+
+    else
+        ok "Apache está activo."
     fi
 
     systemctl enable apache2 >/dev/null 2>&1 || true
-    systemctl start apache2
 
-    if ! systemctl is-active --quiet apache2; then
-        die "Apache2 está instalado pero no pudo iniciarse."
+    if apache2ctl configtest >/dev/null 2>&1; then
+        ok "Configuración Apache válida."
+    else
+        die "La configuración actual de Apache contiene errores."
     fi
 
-    a2enmod rewrite >/dev/null 2>&1 || true
-    a2enmod headers >/dev/null 2>&1 || true
-    a2enmod ssl >/dev/null 2>&1 || true
+    info "VirtualHosts existentes detectados:"
 
-    systemctl restart apache2
+    apache2ctl -S 2>&1 || true
 
-    ok "Apache2 activo."
+    ok "Los VirtualHosts existentes NO serán modificados."
 
     mark_done "2-apache"
 }
 
-# ============================================================
-# ETAPA 3 PHP
-# ============================================================
+# ------------------------------------------------------------
+# PHP
+# ------------------------------------------------------------
 
-step_3_php() {
+detect_php() {
 
-    if is_done "3-php"; then
-        info "Paso 3/10 ya completado."
-        return
+    command -v php >/dev/null 2>&1
+}
+
+detect_php_version() {
+
+    if detect_php; then
+        PHP_VERSION="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || true)"
     fi
+}
 
-    step "[3/10] PHP"
+step_php() {
 
-    if command_exists php; then
-        info "PHP ya está instalado."
-        echo "  $(php -v | head -n 1)"
-    else
-        apt_update
+    title "3. PHP"
 
-        apt_install \
+    if ! detect_php; then
+
+        warn "PHP no está instalado."
+
+        apt-get update
+
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
             php \
             php-cli \
-            php-common \
+            php-fpm \
             php-mysql \
             php-curl \
             php-gd \
             php-mbstring \
             php-xml \
             php-zip \
-            php-intl \
             php-bcmath \
+            php-intl \
             php-soap \
-            php-fpm
+            php-opcache
+
+    else
+        ok "PHP ya está instalado."
     fi
 
-    if ! command_exists php; then
-        die "PHP no está disponible después de la instalación."
+    detect_php_version
+
+    printf 'PHP detectado: %s\n' "${PHP_VERSION:-desconocido}"
+
+    if [[ -n "$PHP_VERSION" ]]; then
+
+        if [[ "$PHP_VERSION" == "8.3" ]]; then
+            ok "PHP 8.3 detectado."
+        else
+            warn "PHP detectado: $PHP_VERSION"
+        fi
+
     fi
 
-    ok "PHP disponible: $(php -r 'echo PHP_VERSION;')"
+    local fpm_candidate=""
+
+    for candidate in \
+        php8.3-fpm \
+        php8.2-fpm \
+        php8.1-fpm
+    do
+        if systemctl cat "$candidate.service" >/dev/null 2>&1; then
+            fpm_candidate="$candidate"
+            break
+        fi
+    done
+
+    if [[ -n "$fpm_candidate" ]]; then
+
+        PHP_FPM_SERVICE="$fpm_candidate"
+
+        if systemctl is-active --quiet "$PHP_FPM_SERVICE"; then
+            ok "PHP-FPM activo: $PHP_FPM_SERVICE"
+        else
+            info "Iniciando $PHP_FPM_SERVICE..."
+            systemctl start "$PHP_FPM_SERVICE"
+        fi
+
+        systemctl enable "$PHP_FPM_SERVICE" >/dev/null 2>&1 || true
+
+    else
+        warn "No se encontró un servicio PHP-FPM."
+    fi
+
+    required_extensions=(
+        mysqli
+        pdo_mysql
+        curl
+        gd
+        mbstring
+        intl
+        xml
+        zip
+        bcmath
+        soap
+        opcache
+    )
+
+    for extension in "${required_extensions[@]}"; do
+
+        if php -m 2>/dev/null | grep -Fxqi "$extension"; then
+            ok "PHP extension: $extension"
+        else
+            warn "Falta extensión PHP: $extension"
+        fi
+
+    done
 
     mark_done "3-php"
 }
 
-# ============================================================
-# ETAPA 4 MYSQL
-# ============================================================
+# ------------------------------------------------------------
+# MYSQL
+# ------------------------------------------------------------
 
-step_4_mysql() {
+detect_mysql() {
 
-    if is_done "4-mysql"; then
-        info "Paso 4/10 ya completado."
-        return
-    fi
+    MYSQL_CLIENT=""
 
-    step "[4/10] MySQL / MariaDB"
-
-    echo
-    info "Analizando instalación existente..."
-    show_mysql_detection
-
-    # --------------------------------------------------------
-    # Si ya existe, NO instalar nada.
-    # --------------------------------------------------------
-
-    if mysql_server_detected; then
-
-        ok "Se detectó una instalación existente de MySQL/MariaDB."
-        info "No se reinstalará ni se modificará el servidor existente."
-
-        detect_mysql_client || true
-        detect_mysql_service || true
-
-        if ! start_mysql_service; then
-
-            warn "No fue posible iniciar automáticamente el servidor."
-            show_mysql_detection
-
-            die "MySQL/MariaDB está detectado pero no está disponible."
+    for candidate in \
+        /usr/bin/mysql \
+        /usr/local/bin/mysql \
+        /usr/bin/mariadb \
+        /usr/local/bin/mariadb
+    do
+        if [[ -x "$candidate" ]]; then
+            MYSQL_CLIENT="$candidate"
+            break
         fi
+    done
+
+    [[ -n "$MYSQL_CLIENT" ]]
+}
+
+detect_mysql_service() {
+
+    MYSQL_SERVICE=""
+
+    for service in mysql mariadb mysqld; do
+
+        if systemctl cat "$service.service" >/dev/null 2>&1; then
+            MYSQL_SERVICE="$service"
+            return 0
+        fi
+
+    done
+
+    return 1
+}
+
+step_mysql() {
+
+    title "4. MYSQL"
+
+    if ! detect_mysql; then
+
+        warn "No se encontró cliente MySQL/MariaDB."
+
+        info "Instalando MySQL..."
+
+        apt-get update
+
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            mysql-server \
+            mysql-client
 
     else
-
-        info "No se encontró una instalación de MySQL/MariaDB."
-        info "Se instalará MySQL Server."
-
-        apt_update
-        apt_install mysql-server mysql-client
-
-        detect_mysql_client ||
-            die "MySQL fue instalado pero no se encontró el cliente."
-
-        detect_mysql_service ||
-            warn "No se pudo identificar el nombre del servicio MySQL."
-
-        if ! start_mysql_service; then
-            die "MySQL fue instalado pero no pudo iniciarse."
-        fi
+        ok "Cliente MySQL existente: $MYSQL_CLIENT"
     fi
 
-    detect_mysql_client || true
+    detect_mysql
+
+    if ! detect_mysql; then
+        die "No fue posible detectar el cliente MySQL después de la comprobación."
+    fi
+
     detect_mysql_service || true
 
-    echo
-    echo "Cliente: ${MYSQL_CLIENT:-no detectado}"
-    echo "Servicio: ${MYSQL_SERVICE:-no detectado}"
+    if [[ -n "$MYSQL_SERVICE" ]]; then
 
-    if [[ -n "${MYSQL_CLIENT:-}" ]]; then
-        "${MYSQL_CLIENT}" --version || true
+        printf 'Servicio MySQL: %s\n' "$MYSQL_SERVICE"
+
+        if systemctl is-active --quiet "$MYSQL_SERVICE"; then
+            ok "MySQL está activo."
+        else
+            warn "MySQL está instalado pero detenido."
+            info "Iniciando MySQL..."
+            systemctl start "$MYSQL_SERVICE"
+        fi
+
+        systemctl enable "$MYSQL_SERVICE" >/dev/null 2>&1 || true
+
+    else
+        warn "No se identificó el servicio systemd de MySQL."
     fi
+
+    "$MYSQL_CLIENT" --version 2>&1 || true
+
+    if [[ -S /run/mysqld/mysqld.sock ]]; then
+        ok "Socket MySQL detectado."
+    fi
+
+    if [[ -d /var/lib/mysql ]]; then
+        ok "Directorio de datos MySQL existente."
+    fi
+
+    if ss -lnt 2>/dev/null | grep -Eq '(^|[[:space:]])0\.0\.0\.0:3306[[:space:]]'; then
+        warn "MySQL está escuchando en 0.0.0.0:3306."
+        warn "El instalador NO modificará bind-address automáticamente."
+    fi
+
+    ok "No se modificarán usuarios ni contraseñas MySQL."
 
     mark_done "4-mysql"
 }
 
-# ============================================================
-# MYSQL SOCKET TEST
-# ============================================================
+# ------------------------------------------------------------
+# CONFIGURACIÓN BASE DE PCCURICO
+# ------------------------------------------------------------
 
-mysql_socket_test() {
+step_pccurico_config() {
 
-    [[ -n "${MYSQL_CLIENT:-}" ]] ||
-        detect_mysql_client || return 1
+    title "5. CONFIGURACIÓN PCCURICO"
 
-    "${MYSQL_CLIENT}" \
-        --protocol=socket \
-        -uroot \
-        -e "SELECT 1;" \
-        >/dev/null 2>&1
-}
+    mkdir -p "$PCCURICO_ETC"
+    chmod 700 "$PCCURICO_ETC"
 
-# ============================================================
-# MYSQL PASSWORD TEST
-# ============================================================
+    if [[ -f "$PCCURICO_ETC/database.conf" ]]; then
 
-mysql_password_test() {
+        ok "Existe configuración de base de datos PCCURICO."
 
-    local password="$1"
+        DB_HOST="$(grep -E '^DB_HOST=' "$PCCURICO_ETC/database.conf" |
+            head -n 1 |
+            cut -d '=' -f2- || true)"
 
-    [[ -n "${MYSQL_CLIENT:-}" ]] ||
-        detect_mysql_client || return 1
+        DB_NAME="$(grep -E '^DB_NAME=' "$PCCURICO_ETC/database.conf" |
+            head -n 1 |
+            cut -d '=' -f2- || true)"
 
-    MYSQL_PWD="$password" \
-        "${MYSQL_CLIENT}" \
-        --protocol=socket \
-        -uroot \
-        -e "SELECT 1;" \
-        >/dev/null 2>&1
-}
+        DB_USER="$(grep -E '^DB_USER=' "$PCCURICO_ETC/database.conf" |
+            head -n 1 |
+            cut -d '=' -f2- || true)"
 
-# ============================================================
-# SOLICITAR ROOT PASSWORD
-# ============================================================
-
-request_mysql_root_password() {
-
-    local attempt=1
-
-    echo
-    echo "============================================================"
-    echo " AUTENTICACIÓN ADMINISTRATIVA MYSQL"
-    echo "============================================================"
-    echo
-    echo "Se necesita acceso administrativo a MySQL."
-    echo "La contraseña NO se guardará en el estado del instalador."
-    echo "La contraseña NO se escribirá deliberadamente en el log."
-    echo
-
-    while (( attempt <= 3 )); do
-
-        MYSQL_ROOT_PASSWORD=""
-
-        read_password \
-            "Contraseña de root de MySQL" \
-            MYSQL_ROOT_PASSWORD
-
-        if mysql_password_test "$MYSQL_ROOT_PASSWORD"; then
-            MYSQL_AUTH_MODE="password"
-            ok "Autenticación root de MySQL validada."
-            return 0
-        fi
-
-        warn "La contraseña no fue aceptada."
-
-        ((attempt++))
-    done
-
-    # --------------------------------------------------------
-    # Fallback socket.
-    # --------------------------------------------------------
-
-    if mysql_socket_test; then
-        warn "MySQL permite autenticación root mediante socket."
-        info "Se utilizará autenticación socket."
-        MYSQL_ROOT_PASSWORD=""
-        MYSQL_AUTH_MODE="socket"
-        return 0
-    fi
-
-    die "No fue posible autenticar root en MySQL."
-}
-
-# ============================================================
-# MYSQL EXEC
-# ============================================================
-
-mysql_exec() {
-
-    [[ -n "${MYSQL_CLIENT:-}" ]] ||
-        detect_mysql_client ||
-        die "No se encontró cliente MySQL/MariaDB."
-
-    if [[ "${MYSQL_AUTH_MODE}" == "password" ]]; then
-
-        MYSQL_PWD="$MYSQL_ROOT_PASSWORD" \
-            "${MYSQL_CLIENT}" \
-            --protocol=socket \
-            -uroot \
-            "$@"
-
-    else
-
-        "${MYSQL_CLIENT}" \
-            --protocol=socket \
-            -uroot \
-            "$@"
-    fi
-}
-
-# ============================================================
-# SQL ESCAPE
-# ============================================================
-
-sql_escape() {
-
-    local value="$1"
-
-    value="${value//\\/\\\\}"
-    value="${value//\'/\'\'}"
-
-    printf '%s' "$value"
-}
-
-# ============================================================
-# PASSWORD GENERATOR
-# ============================================================
-
-generate_password() {
-
-    local password=""
-
-    if command_exists openssl; then
-
-        password="$(
-            openssl rand -base64 48 |
-            tr -dc 'A-Za-z0-9' |
-            head -c 32
-        )"
-
-    else
-
-        password="$(
-            tr -dc 'A-Za-z0-9' </dev/urandom |
-            head -c 32
-        )"
-
-    fi
-
-    printf '%s' "$password"
-}
-
-# ============================================================
-# VALIDACIONES
-# ============================================================
-
-validate_db_name() {
-
-    [[ "$1" =~ ^[A-Za-z0-9_]+$ ]]
-}
-
-validate_db_user() {
-
-    [[ "$1" =~ ^[A-Za-z0-9_]+$ ]]
-}
-
-# ============================================================
-# CONFIG EXISTENTE
-# ============================================================
-
-load_existing_db_config() {
-
-    [[ -f "$DB_CONFIG" ]] || return 1
-
-    unset DB_HOST DB_NAME DB_USER DB_PASSWORD
-
-    # shellcheck disable=SC1090
-    source "$DB_CONFIG"
-
-    [[ -n "${DB_NAME:-}" ]] &&
-    [[ -n "${DB_USER:-}" ]] &&
-    [[ -n "${DB_PASSWORD:-}" ]]
-}
-
-# ============================================================
-# ETAPA 5 DATABASE
-# ============================================================
-
-step_5_database() {
-
-    if is_done "5-database"; then
-        info "Paso 5/10 ya completado."
-        return
-    fi
-
-    step "[5/10] Configuración de base de datos"
-
-    # --------------------------------------------------------
-    # Asegurar MySQL
-    # --------------------------------------------------------
-
-    detect_mysql_client ||
-        die "No existe cliente MySQL/MariaDB."
-
-    if ! start_mysql_service; then
-        die "MySQL/MariaDB no está disponible."
-    fi
-
-    # --------------------------------------------------------
-    # Autenticación
-    # --------------------------------------------------------
-
-    if mysql_socket_test; then
-
-        info "Root MySQL permite autenticación mediante socket."
-
-        if confirm "¿Desea utilizar la contraseña de root de MySQL?"; then
-            request_mysql_root_password
+        if [[ -n "$DB_HOST" && -n "$DB_NAME" && -n "$DB_USER" ]]; then
+            ok "Configuración existente válida estructuralmente."
+            printf 'DB_HOST : %s\n' "$DB_HOST"
+            printf 'DB_NAME : %s\n' "$DB_NAME"
+            printf 'DB_USER : %s\n' "$DB_USER"
         else
-            MYSQL_AUTH_MODE="socket"
-            MYSQL_ROOT_PASSWORD=""
+            warn "database.conf existe pero está incompleto."
         fi
 
     else
 
-        request_mysql_root_password
+        warn "No existe database.conf."
+
+        info "No se creará automáticamente una nueva base de datos."
+        info "La configuración de aplicación se realizará cuando se instale el panel."
+
     fi
 
-    # --------------------------------------------------------
-    # Variables
-    # --------------------------------------------------------
+    mark_done "5-pccurico-config"
+}
 
-    local existing_config="no"
+# ------------------------------------------------------------
+# COMPOSER
+# ------------------------------------------------------------
 
-    if load_existing_db_config; then
+step_composer() {
 
-        echo
-        info "Se encontró configuración existente:"
-        echo "  Base de datos : ${DB_NAME}"
-        echo "  Usuario       : ${DB_USER}"
-        echo
+    title "6. COMPOSER"
 
-        if confirm "¿Desea conservar esta configuración?"; then
-            existing_config="yes"
+    if command -v composer >/dev/null 2>&1; then
+
+        ok "Composer ya está disponible."
+
+        composer --version 2>&1 || true
+
+        mark_done "6-composer"
+        return
+
+    fi
+
+    local composer_path="/usr/local/bin/composer"
+
+    if [[ -x "$composer_path" ]]; then
+
+        ok "Composer encontrado en $composer_path."
+
+        if ! command -v composer >/dev/null 2>&1; then
+            ln -sf "$composer_path" /usr/bin/composer
         fi
+
+        mark_done "6-composer"
+        return
+
     fi
 
-    # --------------------------------------------------------
-    # Nueva configuración
-    # --------------------------------------------------------
+    info "Composer no está instalado."
+    info "Instalando Composer oficial..."
 
-    if [[ "$existing_config" != "yes" ]]; then
+    local installer
+    installer="$(mktemp)"
 
-        read_input \
-            "Nombre de la base de datos" \
-            DB_NAME \
-            "$APP_DB_DEFAULT"
+    curl -fsSL https://getcomposer.org/installer -o "$installer"
 
-        validate_db_name "$DB_NAME" ||
-            die "Nombre de base de datos inválido: ${DB_NAME}"
+    if ! php "$installer" --install-dir=/usr/local/bin --filename=composer; then
+        rm -f "$installer"
+        die "No fue posible instalar Composer."
+    fi
 
-        read_input \
-            "Usuario de aplicación MySQL" \
-            DB_USER \
-            "$APP_DB_USER_DEFAULT"
+    rm -f "$installer"
 
-        validate_db_user "$DB_USER" ||
-            die "Usuario MySQL inválido: ${DB_USER}"
+    chmod 755 /usr/local/bin/composer
 
-        echo
-        echo "Puede ingresar una contraseña para '${DB_USER}'."
-        echo "Si la deja vacía, se generará automáticamente."
-        echo
+    if command -v composer >/dev/null 2>&1; then
+        ok "Composer instalado correctamente."
+        composer --version 2>&1 || true
+    else
+        die "Composer fue instalado pero no está disponible en PATH."
+    fi
 
-        local entered_password=""
+    mark_done "6-composer"
+}
 
-        read_password \
-            "Contraseña de ${DB_USER}" \
-            entered_password
+# ------------------------------------------------------------
+# HERRAMIENTAS
+# ------------------------------------------------------------
 
-        if [[ -n "$entered_password" ]]; then
-            DB_PASSWORD="$entered_password"
+step_tools() {
+
+    title "7. HERRAMIENTAS DEL HOSTING"
+
+    local packages=(
+        curl
+        wget
+        git
+        unzip
+        zip
+        rsync
+        acl
+        openssl
+        jq
+        ca-certificates
+        lsof
+        tree
+        cron
+    )
+
+    info "Comprobando herramientas necesarias..."
+
+    apt-get update
+
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+
+    ok "Herramientas base disponibles."
+
+    mark_done "7-tools"
+}
+
+# ------------------------------------------------------------
+# NODE
+# ------------------------------------------------------------
+
+step_node() {
+
+    title "8. NODE.JS"
+
+    if command -v node >/dev/null 2>&1; then
+
+        ok "Node.js ya está instalado."
+
+        printf 'Node.js: '
+        node --version
+
+    else
+
+        warn "Node.js no está instalado."
+
+        apt-get update
+
+        DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm
+
+    fi
+
+    if command -v npm >/dev/null 2>&1; then
+        printf 'npm: '
+        npm --version
+    fi
+
+    mark_done "8-node"
+}
+
+# ------------------------------------------------------------
+# SEGURIDAD
+# ------------------------------------------------------------
+
+step_security() {
+
+    title "9. SEGURIDAD"
+
+    if command -v fail2ban-client >/dev/null 2>&1; then
+
+        ok "Fail2ban ya está instalado."
+
+        if systemctl is-active --quiet fail2ban; then
+            ok "Fail2ban está activo."
         else
-            DB_PASSWORD="$(generate_password)"
-            info "Se generó una contraseña segura automáticamente."
+            warn "Fail2ban está instalado pero detenido."
+            systemctl start fail2ban
         fi
 
-        unset entered_password
+        systemctl enable fail2ban >/dev/null 2>&1 || true
 
     else
 
-        validate_db_name "$DB_NAME" ||
-            die "DB_NAME existente inválido."
+        info "Fail2ban no está instalado."
 
-        validate_db_user "$DB_USER" ||
-            die "DB_USER existente inválido."
+        apt-get update
+
+        DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban
+
+        systemctl enable --now fail2ban
 
     fi
 
-    # --------------------------------------------------------
-    # Base de datos
-    # --------------------------------------------------------
-
-    local escaped_db
-    local escaped_user
-    local escaped_password
-
-    escaped_db="$(sql_escape "$DB_NAME")"
-    escaped_user="$(sql_escape "$DB_USER")"
-    escaped_password="$(sql_escape "$DB_PASSWORD")"
-
-    local db_exists
-
-    db_exists="$(
-        mysql_exec \
-            -N \
-            -B \
-            -e "
-                SELECT SCHEMA_NAME
-                FROM INFORMATION_SCHEMA.SCHEMATA
-                WHERE SCHEMA_NAME='${escaped_db}';
-            "
-    )"
-
-    if [[ "$db_exists" == "$DB_NAME" ]]; then
-
-        warn "La base de datos '${DB_NAME}' ya existe."
-        warn "NO será eliminada."
-        warn "NO será recreada."
-
-    else
-
-        info "Creando base de datos '${DB_NAME}'..."
-
-        mysql_exec \
-            -e "
-                CREATE DATABASE \`${DB_NAME}\`
-                CHARACTER SET utf8mb4
-                COLLATE utf8mb4_unicode_ci;
-            "
-
-        ok "Base de datos creada."
-    fi
-
-    # --------------------------------------------------------
-    # Usuario localhost
-    # --------------------------------------------------------
-
-    local user_local
-
-    user_local="$(
-        mysql_exec \
-            -N \
-            -B \
-            -e "
-                SELECT User
-                FROM mysql.user
-                WHERE User='${escaped_user}'
-                AND Host='localhost';
-            "
-    )"
-
-    if [[ "$user_local" == "$DB_USER" ]]; then
-
-        info "Usuario '${DB_USER}'@'localhost' ya existe."
-
-        mysql_exec \
-            -e "
-                ALTER USER '${escaped_user}'@'localhost'
-                IDENTIFIED BY '${escaped_password}';
-            "
-
-    else
-
-        info "Creando usuario '${DB_USER}'@'localhost'..."
-
-        mysql_exec \
-            -e "
-                CREATE USER '${escaped_user}'@'localhost'
-                IDENTIFIED BY '${escaped_password}';
-            "
-    fi
-
-    # --------------------------------------------------------
-    # Usuario 127.0.0.1
-    # --------------------------------------------------------
-
-    local user_ip
-
-    user_ip="$(
-        mysql_exec \
-            -N \
-            -B \
-            -e "
-                SELECT User
-                FROM mysql.user
-                WHERE User='${escaped_user}'
-                AND Host='127.0.0.1';
-            "
-    )"
-
-    if [[ "$user_ip" == "$DB_USER" ]]; then
-
-        info "Usuario '${DB_USER}'@'127.0.0.1' ya existe."
-
-        mysql_exec \
-            -e "
-                ALTER USER '${escaped_user}'@'127.0.0.1'
-                IDENTIFIED BY '${escaped_password}';
-            "
-
-    else
-
-        info "Creando usuario '${DB_USER}'@'127.0.0.1'..."
-
-        mysql_exec \
-            -e "
-                CREATE USER '${escaped_user}'@'127.0.0.1'
-                IDENTIFIED BY '${escaped_password}';
-            "
-    fi
-
-    # --------------------------------------------------------
-    # Privilegios
-    # --------------------------------------------------------
-
-    info "Asignando privilegios..."
-
-    mysql_exec \
-        -e "
-            GRANT ALL PRIVILEGES
-            ON \`${DB_NAME}\`.*
-            TO '${escaped_user}'@'localhost';
-        "
-
-    mysql_exec \
-        -e "
-            GRANT ALL PRIVILEGES
-            ON \`${DB_NAME}\`.*
-            TO '${escaped_user}'@'127.0.0.1';
-        "
-
-    mysql_exec \
-        -e "FLUSH PRIVILEGES;"
-
-    # --------------------------------------------------------
-    # Guardar configuración
-    # --------------------------------------------------------
-
-    cat > "$DB_CONFIG" <<EOF
-# ============================================================
-# PCCURICO HOSTING
-# Configuración de base de datos
-# Generado automáticamente
-# ============================================================
-
-DB_HOST=127.0.0.1
-DB_NAME=${DB_NAME}
-DB_USER=${DB_USER}
-DB_PASSWORD=${DB_PASSWORD}
-EOF
-
-    chmod 600 "$DB_CONFIG"
-
-    ok "Configuración guardada en:"
-    echo "  ${DB_CONFIG}"
-    echo
-    info "La contraseña de la aplicación no se mostrará."
-
-    # --------------------------------------------------------
-    # Limpiar root password de memoria
-    # --------------------------------------------------------
-
-    unset MYSQL_ROOT_PASSWORD
-
-    mark_done "5-database"
-}
-
-# ============================================================
-# ETAPA 6
-# ============================================================
-
-step_6_tools() {
-
-    if is_done "6-tools"; then
-        info "Paso 6/10 ya completado."
-        return
-    fi
-
-    step "[6/10] Herramientas adicionales"
-
-    apt_update
-
-    apt_install \
-        build-essential \
-        pkg-config \
-        acl \
-        rsync \
-        jq \
-        tree \
-        cron \
-        logrotate
-
-    systemctl enable cron >/dev/null 2>&1 || true
-    systemctl start cron >/dev/null 2>&1 || true
-
-    ok "Herramientas instaladas."
-
-    mark_done "6-tools"
-}
-
-# ============================================================
-# ETAPA 7 NODE
-# ============================================================
-
-step_7_node() {
-
-    if is_done "7-node"; then
-        info "Paso 7/10 ya completado."
-        return
-    fi
-
-    step "[7/10] Node.js / npm"
-
-    if command_exists node && command_exists npm; then
-
-        info "Node.js ya está instalado."
-        echo "  Node: $(node --version)"
-        echo "  npm : $(npm --version)"
-
-    else
-
-        apt_update
-        apt_install nodejs npm
-
-        if ! command_exists node; then
-            die "Node.js no quedó disponible."
-        fi
-
-        if ! command_exists npm; then
-            warn "npm no está disponible."
-        fi
-    fi
-
-    mark_done "7-node"
-}
-
-# ============================================================
-# ETAPA 8 OLLAMA
-# ============================================================
-
-step_8_ollama() {
-
-    if is_done "8-ollama"; then
-        info "Paso 8/10 ya completado."
-        return
-    fi
-
-    step "[8/10] Ollama"
-
-    if command_exists ollama; then
-
-        info "Ollama ya está instalado."
-        ollama --version || true
-
-    else
-
-        info "Descargando instalador oficial de Ollama..."
-
-        local tmp_file
-
-        tmp_file="$(mktemp)"
-
-        curl -fsSL \
-            https://ollama.com/install.sh \
-            -o "$tmp_file"
-
-        [[ -s "$tmp_file" ]] ||
-            die "El instalador de Ollama se descargó vacío."
-
-        sh "$tmp_file"
-
-        rm -f "$tmp_file"
-
-        if ! command_exists ollama; then
-            warn "Ollama fue procesado pero todavía no aparece en PATH."
-        fi
-    fi
-
-    if systemctl cat ollama.service >/dev/null 2>&1; then
-
-        systemctl enable ollama >/dev/null 2>&1 || true
-        systemctl start ollama >/dev/null 2>&1 || true
-
-        if systemctl is-active --quiet ollama; then
-            ok "Servicio Ollama activo."
+    if command -v ufw >/dev/null 2>&1; then
+
+        if ufw status 2>/dev/null | grep -qi "inactive"; then
+            warn "UFW está instalado pero INACTIVO."
+            warn "No será activado automáticamente."
         else
-            warn "Ollama instalado pero el servicio no está activo."
+            ok "UFW está activo."
         fi
+
     fi
-
-    mark_done "8-ollama"
-}
-
-# ============================================================
-# ETAPA 9 SEGURIDAD
-# ============================================================
-
-step_9_security() {
-
-    if is_done "9-security"; then
-        info "Paso 9/10 ya completado."
-        return
-    fi
-
-    step "[9/10] Seguridad básica"
-
-    apt_update
-    apt_install fail2ban
-
-    systemctl enable fail2ban >/dev/null 2>&1 || true
-    systemctl start fail2ban >/dev/null 2>&1 || true
-
-    if systemctl is-active --quiet fail2ban; then
-        ok "Fail2ban activo."
-    else
-        warn "Fail2ban está instalado pero no está activo."
-    fi
-
-    # --------------------------------------------------------
-    # NO activar UFW automáticamente.
-    # --------------------------------------------------------
-
-    info "UFW no será activado automáticamente."
-    info "Esto evita bloquear SSH accidentalmente."
 
     mark_done "9-security"
 }
 
-# ============================================================
-# PRUEBA DB
-# ============================================================
+# ------------------------------------------------------------
+# CLOUDFLARE
+# ------------------------------------------------------------
 
-test_application_database() {
+step_cloudflare() {
 
-    [[ -f "$DB_CONFIG" ]] || return 1
+    title "10. CLOUDFLARE TUNNEL"
 
-    local db_host
-    local db_name
-    local db_user
-    local db_password
+    if command -v cloudflared >/dev/null 2>&1; then
 
-    # shellcheck disable=SC1090
-    source "$DB_CONFIG"
+        ok "cloudflared ya está instalado."
 
-    [[ -n "${db_name:-}" ]] || return 1
-    [[ -n "${db_user:-}" ]] || return 1
-    [[ -n "${db_password:-}" ]] || return 1
+        cloudflared --version 2>&1 || true
 
-    MYSQL_PWD="$db_password" \
-        "${MYSQL_CLIENT}" \
-        -h "${db_host:-127.0.0.1}" \
-        -u "$db_user" \
-        -e "SELECT 1;" \
-        >/dev/null 2>&1
-}
+        if systemctl cat cloudflared.service >/dev/null 2>&1; then
 
-# ============================================================
-# ETAPA 10
-# ============================================================
+            if systemctl is-active --quiet cloudflared; then
+                ok "Cloudflare Tunnel está activo."
+            else
+                warn "Cloudflare Tunnel está instalado pero detenido."
+            fi
 
-step_10_verification() {
-
-    if is_done "10-verification"; then
-        info "Paso 10/10 ya completado."
-        return
-    fi
-
-    step "[10/10] Verificación final"
-
-    local errors=0
-
-    echo
-    echo "---- APACHE ----"
-
-    if command_exists apache2 &&
-       systemctl is-active --quiet apache2; then
-
-        echo "[OK] Apache2 activo."
-
-    else
-
-        echo "[ERROR] Apache2 no está activo."
-        ((errors++))
-    fi
-
-    echo
-    echo "---- PHP ----"
-
-    if command_exists php; then
-        echo "[OK] PHP $(php -r 'echo PHP_VERSION;')"
-    else
-        echo "[ERROR] PHP no encontrado."
-        ((errors++))
-    fi
-
-    echo
-    echo "---- MYSQL / MARIADB ----"
-
-    if mysql_server_detected; then
-        echo "[OK] Servidor MySQL/MariaDB detectado."
-    else
-        echo "[ERROR] Servidor MySQL/MariaDB no detectado."
-        ((errors++))
-    fi
-
-    detect_mysql_client || true
-    detect_mysql_service || true
-
-    if [[ -n "${MYSQL_CLIENT:-}" ]]; then
-        echo "[OK] Cliente: ${MYSQL_CLIENT}"
-        "${MYSQL_CLIENT}" --version || true
-    else
-        echo "[ERROR] Cliente MySQL no encontrado."
-        ((errors++))
-    fi
-
-    if [[ -n "${MYSQL_SERVICE:-}" ]]; then
-
-        if systemctl is-active --quiet "$MYSQL_SERVICE"; then
-            echo "[OK] Servicio: ${MYSQL_SERVICE}"
-        else
-            echo "[ERROR] Servicio ${MYSQL_SERVICE} inactivo."
-            ((errors++))
         fi
 
-    elif detect_mysql_process || detect_mysql_socket; then
-
-        echo "[OK] Servidor detectado mediante proceso/socket."
-
-    else
-
-        echo "[ERROR] No se pudo verificar el servicio MySQL."
-        ((errors++))
-    fi
-
-    echo
-    echo "---- BASE DE DATOS PCCURICO ----"
-
-    if [[ -f "$DB_CONFIG" ]]; then
-
-        echo "[OK] Archivo de configuración presente."
-
-        if test_application_database; then
-            echo "[OK] Conexión de aplicación a MySQL correcta."
-        else
-            echo "[ERROR] La conexión del usuario de aplicación falló."
-            ((errors++))
+        if [[ -f /etc/cloudflared/config.yml ]]; then
+            ok "Existe /etc/cloudflared/config.yml."
         fi
 
     else
 
-        echo "[ERROR] Falta ${DB_CONFIG}"
-        ((errors++))
+        warn "cloudflared no está instalado."
+        warn "No se instalará automáticamente en esta etapa."
+
     fi
 
-    echo
-    echo "---- NODE.JS ----"
+    ok "La configuración existente de Cloudflare NO será modificada."
 
-    if command_exists node; then
-        echo "[OK] Node.js $(node --version)"
-    else
-        echo "[AVISO] Node.js no disponible."
-    fi
-
-    echo
-    echo "---- OLLAMA ----"
-
-    if command_exists ollama; then
-        echo "[OK] Ollama instalado."
-    else
-        echo "[AVISO] Ollama no disponible."
-    fi
-
-    echo
-    echo "---- FAIL2BAN ----"
-
-    if systemctl is-active --quiet fail2ban; then
-        echo "[OK] Fail2ban activo."
-    else
-        echo "[AVISO] Fail2ban inactivo."
-    fi
-
-    echo
-
-    if (( errors > 0 )); then
-        warn "La verificación terminó con ${errors} problema(s)."
-        return 1
-    fi
-
-    ok "Todas las comprobaciones principales fueron exitosas."
-
-    mark_done "10-verification"
+    mark_done "10-cloudflare"
 }
 
-# ============================================================
-# INSTALACIÓN COMPLETA
-# ============================================================
+# ------------------------------------------------------------
+# SERVICIOS EXISTENTES
+# ------------------------------------------------------------
 
-install_all() {
+step_existing_services() {
 
-    step "PCCURICO HOSTING SERVER"
+    title "11. SERVICIOS EXISTENTES"
 
-    echo
-    echo "Versión: ${VERSION}"
-    echo
-    echo "Características:"
-    echo "  - Instalación reanudable"
-    echo "  - Detección de componentes existentes"
-    echo "  - Protección de bases de datos"
-    echo "  - MySQL/MariaDB detectado automáticamente"
-    echo "  - Compatible con curl | sudo bash"
-    echo
+    local services=(
+        n8n
+        open-webui
+        omniroute
+        samba
+        smbd
+        nmbd
+        dnsmasq
+        xrdp
+        xrdp-sesman
+        ollama
+    )
 
-    step_1_base
-    step_2_apache
-    step_3_php
-    step_4_mysql
-    step_5_database
-    step_6_tools
-    step_7_node
-    step_8_ollama
-    step_9_security
-    step_10_verification
+    for service in "${services[@]}"; do
 
-    final_message
+        if systemctl cat "$service.service" >/dev/null 2>&1; then
+
+            if systemctl is-active --quiet "$service"; then
+                ok "$service está activo."
+            else
+                info "$service existe pero no está activo."
+            fi
+
+        fi
+
+    done
+
+    info "Estos servicios pertenecen al servidor existente."
+    info "El instalador PCCURICO no los modifica."
+
+    mark_done "11-existing-services"
 }
 
+# ------------------------------------------------------------
+# ESTRUCTURA PCCURICO
+# ------------------------------------------------------------
+
+step_structure() {
+
+    title "12. ESTRUCTURA PCCURICO HOSTING"
+
+    mkdir -p "$PCCURICO_ETC"
+    mkdir -p "$PCCURICO_STATE_DIR"
+    mkdir -p "$PCCURICO_LOG_DIR"
+    mkdir -p "$PCCURICO_BACKUP_DIR"
+
+    chmod 700 "$PCCURICO_ETC"
+    chmod 750 "$PCCURICO_STATE_DIR"
+    chmod 750 "$PCCURICO_LOG_DIR"
+    chmod 700 "$PCCURICO_BACKUP_DIR"
+
+    # No se crea todavía un VirtualHost.
+    # No se crea todavía un dominio.
+    # No se modifica /var/www existente.
+
+    local structure_file="${PCCURICO_ETC}/server.conf"
+
+    if [[ ! -f "$structure_file" ]]; then
+
+        cat > "$structure_file" <<EOF
 # ============================================================
-# REANUDAR 5/10
+# PCCURICO HOSTING
+# CONFIGURACION DEL SERVIDOR
 # ============================================================
 
-resume_from_5() {
+PCCURICO_HOSTNAME=$(hostname)
+PCCURICO_WEB_ROOT=/var/www
+PCCURICO_ETC=/etc/pccurico
+PCCURICO_STATE=/var/lib/pccurico-hosting
+PCCURICO_LOG=/var/log/pccurico
 
-    step "REANUDANDO DESDE 5/10"
+APACHE_CONFIG=/etc/apache2
+PHP_VERSION=${PHP_VERSION:-}
+PHP_FPM_SERVICE=${PHP_FPM_SERVICE:-}
 
-    echo
-    echo "Los pasos 1 a 4 NO serán reinstalados."
-    echo "Se verificará el estado real del servidor."
-    echo
+MYSQL_SERVICE=${MYSQL_SERVICE:-}
+MYSQL_CLIENT=${MYSQL_CLIENT:-}
 
-    # --------------------------------------------------------
+CLOUDFLARED_CONFIG=/etc/cloudflared/config.yml
+
+OLLAMA_URL=http://127.0.0.1:11434
+EOF
+
+        chmod 600 "$structure_file"
+
+        ok "Configuración base creada:"
+        printf '  %s\n' "$structure_file"
+
+    else
+
+        ok "Configuración base ya existe."
+
+    fi
+
+    mark_done "12-structure"
+}
+
+# ------------------------------------------------------------
+# BACKUP CONFIGURACIÓN APACHE
+# ------------------------------------------------------------
+
+step_backup() {
+
+    title "13. RESPALDO DE CONFIGURACIÓN"
+
+    local timestamp
+    timestamp="$(date '+%Y%m%d_%H%M%S')"
+
+    local backup_path="${PCCURICO_BACKUP_DIR}/${timestamp}"
+
+    mkdir -p "$backup_path"
+
+    if [[ -d /etc/apache2 ]]; then
+        cp -a /etc/apache2 "$backup_path/apache2"
+        ok "Respaldo Apache creado."
+    fi
+
+    if [[ -d /etc/php ]]; then
+        cp -a /etc/php "$backup_path/php"
+        ok "Respaldo PHP creado."
+    fi
+
+    if [[ -d /etc/pccurico ]]; then
+        cp -a "$PCCURICO_ETC" "$backup_path/pccurico"
+        ok "Respaldo PCCURICO creado."
+    fi
+
+    if [[ -d /etc/cloudflared ]]; then
+        cp -a /etc/cloudflared "$backup_path/cloudflared"
+        ok "Respaldo Cloudflare creado."
+    fi
+
+    chmod -R go-rwx "$backup_path"
+
+    printf 'Backup: %s\n' "$backup_path"
+
+    mark_done "13-backup"
+}
+
+# ------------------------------------------------------------
+# VALIDACIÓN FINAL
+# ------------------------------------------------------------
+
+step_final() {
+
+    title "14. VALIDACIÓN FINAL"
+
+    local failures=0
+
     # Apache
-    # --------------------------------------------------------
-
-    if command_exists apache2; then
-
-        ok "Apache2 detectado."
-
-        if ! systemctl is-active --quiet apache2; then
-            warn "Apache2 está detenido. Intentando iniciarlo..."
-            systemctl start apache2
-        fi
-
+    if systemctl is-active --quiet apache2; then
+        ok "Apache: ACTIVO"
     else
-
-        die "Apache2 no está instalado."
+        error "Apache: NO ACTIVO"
+        failures=$((failures + 1))
     fi
 
-    # --------------------------------------------------------
     # PHP
-    # --------------------------------------------------------
-
-    if command_exists php; then
-        ok "PHP detectado: $(php -r 'echo PHP_VERSION;')"
+    if command -v php >/dev/null 2>&1; then
+        ok "PHP: $(php -r 'echo PHP_VERSION;')"
     else
-        die "PHP no está instalado."
+        error "PHP: NO DISPONIBLE"
+        failures=$((failures + 1))
     fi
 
-    # --------------------------------------------------------
+    # PHP-FPM
+    if [[ -n "$PHP_FPM_SERVICE" ]]; then
+        if systemctl is-active --quiet "$PHP_FPM_SERVICE"; then
+            ok "PHP-FPM: ACTIVO"
+        else
+            error "PHP-FPM: NO ACTIVO"
+            failures=$((failures + 1))
+        fi
+    fi
+
     # MySQL
-    # --------------------------------------------------------
-
-    info "Detectando MySQL/MariaDB..."
-    show_mysql_detection
-
-    if ! mysql_server_detected; then
-
-        die "No se encontró una instalación de MySQL/MariaDB."
-
+    if detect_mysql; then
+        ok "MySQL: CLIENTE DISPONIBLE"
+    else
+        error "MySQL: CLIENTE NO DISPONIBLE"
+        failures=$((failures + 1))
     fi
 
-    detect_mysql_client ||
-        die "Se detectó servidor MySQL/MariaDB pero no su cliente."
-
-    detect_mysql_service || true
-
-    if ! start_mysql_service; then
-
-        show_mysql_detection
-
-        die "MySQL/MariaDB fue detectado pero no está disponible."
+    if [[ -n "$MYSQL_SERVICE" ]]; then
+        if systemctl is-active --quiet "$MYSQL_SERVICE"; then
+            ok "MySQL: SERVICIO ACTIVO"
+        else
+            error "MySQL: SERVICIO NO ACTIVO"
+            failures=$((failures + 1))
+        fi
     fi
 
-    # --------------------------------------------------------
-    # Marcar 1-4 como existentes
-    # --------------------------------------------------------
+    # Node
+    if command -v node >/dev/null 2>&1; then
+        ok "Node.js: $(node --version)"
+    else
+        error "Node.js: NO DISPONIBLE"
+        failures=$((failures + 1))
+    fi
 
-    mark_done "1-base"
-    mark_done "2-apache"
-    mark_done "3-php"
-    mark_done "4-mysql"
+    # Composer
+    if command -v composer >/dev/null 2>&1; then
+        ok "Composer: DISPONIBLE"
+    else
+        error "Composer: NO DISPONIBLE"
+        failures=$((failures + 1))
+    fi
 
-    # --------------------------------------------------------
-    # Continuar
-    # --------------------------------------------------------
+    # Ollama
+    if systemctl is-active --quiet ollama 2>/dev/null; then
+        ok "Ollama: ACTIVO"
+    else
+        warn "Ollama: no se validó como activo."
+    fi
 
-    step_5_database
-    step_6_tools
-    step_7_node
-    step_8_ollama
-    step_9_security
-    step_10_verification
+    # Cloudflare
+    if systemctl is-active --quiet cloudflared 2>/dev/null; then
+        ok "Cloudflare Tunnel: ACTIVO"
+    else
+        warn "Cloudflare Tunnel: no se validó como activo."
+    fi
 
-    final_message
+    # Fail2ban
+    if systemctl is-active --quiet fail2ban 2>/dev/null; then
+        ok "Fail2ban: ACTIVO"
+    else
+        warn "Fail2ban: no se validó como activo."
+    fi
+
+    # Apache config
+    if apache2ctl configtest >/dev/null 2>&1; then
+        ok "Apache configtest: OK"
+    else
+        error "Apache configtest: ERROR"
+        failures=$((failures + 1))
+    fi
+
+    if (( failures > 0 )); then
+        die "La validación final encontró ${failures} problemas."
+    fi
+
+    mark_done "14-final"
 }
 
-# ============================================================
+# ------------------------------------------------------------
 # ESTADO
-# ============================================================
+# ------------------------------------------------------------
 
 show_status() {
 
-    step "ESTADO PCCURICO HOSTING SERVER"
+    title "ESTADO PCCURICO HOSTING"
 
-    echo
-    echo "Versión : ${VERSION}"
-    echo "Estado  : ${STATE_FILE}"
-    echo "Log     : ${LOG_FILE}"
-    echo
+    printf 'Versión instalador : %s\n' "$VERSION"
+    printf 'Servidor           : %s\n' "$(hostname)"
+    printf 'Estado              : %s\n' "$STATE_FILE"
 
-    local stages=(
-        "1-base"
-        "2-apache"
-        "3-php"
-        "4-mysql"
-        "5-database"
-        "6-tools"
-        "7-node"
-        "8-ollama"
-        "9-security"
-        "10-verification"
-    )
+    printf '\n'
 
-    local number=1
-    local stage
-
-    for stage in "${stages[@]}"; do
-
-        if is_done "$stage"; then
-
-            echo -e "  ${GREEN}[OK]${NC} ${number}/10 ${stage}"
-
-        else
-
-            echo -e "  ${YELLOW}[PENDIENTE]${NC} ${number}/10 ${stage}"
-
-        fi
-
-        ((number++))
-    done
-
-    echo
-
-    echo "Componentes detectados:"
-    echo
-
-    if command_exists apache2; then
-        echo "  [OK] Apache2"
+    if [[ -f "$STATE_FILE" ]]; then
+        cat "$STATE_FILE"
     else
-        echo "  [--] Apache2"
+        printf 'No existe estado.\n'
     fi
 
-    if command_exists php; then
-        echo "  [OK] PHP"
+    printf '\n'
+
+    if [[ -f "$PCCURICO_ETC/database.conf" ]]; then
+        ok "database.conf existe."
     else
-        echo "  [--] PHP"
+        warn "database.conf no existe."
     fi
 
-    if mysql_server_detected; then
-        echo "  [OK] MySQL/MariaDB"
+    if [[ -f "$PCCURICO_ETC/server.conf" ]]; then
+        ok "server.conf existe."
     else
-        echo "  [--] MySQL/MariaDB"
+        warn "server.conf no existe."
     fi
 
-    if command_exists node; then
-        echo "  [OK] Node.js"
+    if command -v composer >/dev/null 2>&1; then
+        ok "Composer disponible."
     else
-        echo "  [--] Node.js"
-    fi
-
-    if command_exists ollama; then
-        echo "  [OK] Ollama"
-    else
-        echo "  [--] Ollama"
-    fi
-
-    echo
-
-    if [[ -f "$DB_CONFIG" ]]; then
-        echo "[OK] Configuración DB: ${DB_CONFIG}"
-    else
-        echo "[--] Configuración DB no creada."
+        warn "Composer no disponible."
     fi
 }
 
-# ============================================================
+# ------------------------------------------------------------
 # DIAGNÓSTICO MYSQL
-# ============================================================
+# ------------------------------------------------------------
 
-mysql_diagnostic() {
+mysql_status() {
 
-    step "DIAGNÓSTICO MYSQL / MARIADB"
+    title "DIAGNÓSTICO MYSQL"
 
-    echo
-    echo "---- CLIENTE ----"
-
-    if detect_mysql_client; then
-        echo "[OK] Cliente: ${MYSQL_CLIENT}"
-        "${MYSQL_CLIENT}" --version || true
-    else
-        echo "[--] Cliente MySQL/MariaDB no encontrado."
+    if ! detect_mysql; then
+        error "No se encontró MySQL."
+        return 0
     fi
 
-    echo
-    echo "---- SERVICIO ----"
+    printf 'Cliente: %s\n' "$MYSQL_CLIENT"
 
-    if detect_mysql_service; then
+    "$MYSQL_CLIENT" --version
 
-        echo "[OK] Servicio detectado: ${MYSQL_SERVICE}"
+    detect_mysql_service || true
 
-        systemctl is-active \
-            "$MYSQL_SERVICE" \
-            2>/dev/null ||
-            true
+    printf 'Servicio: %s\n' "${MYSQL_SERVICE:-NO DETECTADO}"
 
-    else
-
-        echo "[--] No se identificó unidad systemd."
+    if [[ -n "$MYSQL_SERVICE" ]]; then
+        systemctl status "$MYSQL_SERVICE" --no-pager -l || true
     fi
 
-    echo
-    echo "---- PROCESOS ----"
+    printf '\nSockets:\n'
+    find /run /var/run -type s 2>/dev/null |
+        grep -Ei 'mysql|mariadb' || true
 
-    if detect_mysql_process; then
-        echo "[OK] Servidor MySQL/MariaDB ejecutándose."
-    else
-        echo "[--] No se detectó proceso."
-    fi
-
-    echo
-    echo "---- SOCKETS ----"
-
-    if detect_mysql_socket; then
-        echo "[OK] Socket MySQL/MariaDB detectado."
-    else
-        echo "[--] Socket no detectado."
-    fi
-
-    echo
-    echo "---- DATADIR ----"
-
-    if detect_mysql_datadir; then
-        echo "[OK] /var/lib/mysql existe."
-    else
-        echo "[--] /var/lib/mysql no existe."
-    fi
-
-    echo
-    echo "---- ROOT SOCKET AUTH ----"
-
-    if mysql_socket_test; then
-        echo "[OK] root puede autenticarse mediante socket."
-    else
-        echo "[INFO] root no permite autenticación socket sin password."
-    fi
-
-    echo
-    echo "---- PCCURICO DATABASE CONFIG ----"
-
-    if [[ -f "$DB_CONFIG" ]]; then
-
-        echo "[OK] ${DB_CONFIG}"
-
-        local cfg_name=""
-        local cfg_user=""
-        local cfg_host=""
-
-        # shellcheck disable=SC1090
-        source "$DB_CONFIG"
-
-        cfg_name="${DB_NAME:-}"
-        cfg_user="${DB_USER:-}"
-        cfg_host="${DB_HOST:-}"
-
-        echo "DB_HOST=${cfg_host}"
-        echo "DB_NAME=${cfg_name}"
-        echo "DB_USER=${cfg_user}"
-        echo "DB_PASSWORD=[OCULTA]"
-
-    else
-
-        echo "[--] No existe ${DB_CONFIG}"
-
-    fi
+    printf '\nPuertos:\n'
+    ss -lntp 2>/dev/null |
+        grep -E ':3306|:33060' || true
 }
 
-# ============================================================
+# ------------------------------------------------------------
 # LOG
-# ============================================================
+# ------------------------------------------------------------
 
 show_log() {
 
-    step "LOG PCCURICO"
-
-    if [[ ! -f "$LOG_FILE" ]]; then
-        warn "El log todavía no existe."
-        return
+    if [[ -f "$LOG_FILE" ]]; then
+        cat "$LOG_FILE"
+    else
+        warn "No existe todavía el log."
     fi
-
-    tail -n 150 "$LOG_FILE"
 }
 
-# ============================================================
-# FINAL
-# ============================================================
+# ------------------------------------------------------------
+# INSTALACIÓN COMPLETA
+# ------------------------------------------------------------
 
-final_message() {
+install_all() {
 
-    step "PROCESO FINALIZADO"
+    title "PCCURICO HOSTING ${VERSION}"
 
-    echo
-    echo "PCCURICO HOSTING SERVER"
-    echo "Versión: ${VERSION}"
-    echo
+    printf 'Servidor: %s\n' "$(hostname)"
+    printf 'Fecha   : %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
 
-    echo "Estado:"
-    echo "  ${STATE_FILE}"
+    printf '\n'
+    info "Modo: instalación detectiva y no destructiva."
+    info "Se conservarán los servicios existentes."
+    info "No se recrearán bases de datos existentes."
 
-    echo
-    echo "Configuración:"
-    echo "  ${DB_CONFIG}"
+    check_os
 
-    echo
-    echo "Log:"
-    echo "  ${LOG_FILE}"
+    step_apache
+    step_php
+    step_mysql
+    step_pccurico_config
+    step_composer
+    step_tools
+    step_node
+    step_security
+    step_cloudflare
+    step_existing_services
+    step_structure
+    step_backup
+    step_final
 
-    echo
-    ok "Instalador finalizado."
+    printf '\n'
+    print_line
+    printf '%bINSTALACIÓN PCCURICO HOSTING FINALIZADA%b\n' "$GREEN" "$RESET"
+    print_line
+
+    printf '\n'
+    ok "Servidor preparado."
+
+    printf '\n'
+    printf 'Configuración PCCURICO:\n'
+    printf '  %s\n' "$PCCURICO_ETC"
+
+    printf '\n'
+    printf 'Estado:\n'
+    printf '  %s\n' "$STATE_FILE"
+
+    printf '\n'
+    printf 'Log:\n'
+    printf '  %s\n' "$LOG_FILE"
+
+    printf '\n'
+    printf 'Backups:\n'
+    printf '  %s\n' "$PCCURICO_BACKUP_DIR"
+
+    printf '\n'
+    info "No se modificaron los VirtualHosts existentes."
+    info "No se modificaron las bases de datos existentes."
+    info "No se modificó la configuración de Cloudflare."
+    info "No se modificó Ollama."
 }
 
-# ============================================================
-# AYUDA
-# ============================================================
+# ------------------------------------------------------------
+# USO
+# ------------------------------------------------------------
 
 usage() {
 
     cat <<EOF
 
-PCCURICO HOSTING SERVER
-Versión ${VERSION}
+PCCURICO HOSTING
+Instalador detectivo y no destructivo
 
 Uso:
 
-  curl -fsSL https://raw.githubusercontent.com/pccurico/install/refs/heads/master/${SCRIPT_NAME} | sudo bash
+  curl -fsSL https://raw.githubusercontent.com/pccurico/install/refs/heads/master/pccurico_hosting_install.sh | sudo bash
 
 Opciones:
 
-  --install
-      Instalación completa / continuar.
+  --install       Ejecutar instalación completa
+  --status        Mostrar estado
+  --mysql         Diagnóstico MySQL
+  --log           Mostrar log
+  --version       Mostrar versión
+  --help          Mostrar ayuda
 
-  --resume-5
-      Reanudar directamente desde 5/10.
-
-  --status
-      Mostrar estado y componentes detectados.
-
-  --mysql
-      Diagnóstico completo de MySQL/MariaDB.
-
-  --log
-      Mostrar las últimas líneas del log.
-
-  --help
-      Mostrar esta ayuda.
+El instalador detecta automáticamente los servicios existentes.
 
 EOF
 }
 
-# ============================================================
+# ------------------------------------------------------------
 # MAIN
-# ============================================================
+# ------------------------------------------------------------
 
 main() {
 
@@ -1933,14 +1286,16 @@ main() {
     prepare_directories
     acquire_lock
 
+    log_safe "Inicio instalador ${VERSION}"
+
     case "${1:-}" in
 
-        --install)
+        "")
             install_all
             ;;
 
-        --resume-5)
-            resume_from_5
+        --install)
+            install_all
             ;;
 
         --status)
@@ -1948,27 +1303,30 @@ main() {
             ;;
 
         --mysql)
-            mysql_diagnostic
+            mysql_status
             ;;
 
         --log)
             show_log
             ;;
 
+        --version)
+            printf '%s %s\n' "$SCRIPT_NAME" "$VERSION"
+            ;;
+
         --help|-h)
             usage
             ;;
 
-        "")
-            install_all
-            ;;
-
         *)
-            error "Argumento desconocido: $1"
+            error "Opción desconocida: $1"
             usage
             exit 1
             ;;
+
     esac
+
+    log_safe "Fin instalador ${VERSION}"
 }
 
 main "$@"
