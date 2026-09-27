@@ -6,3 +6,6 @@ curl -fsSL https://raw.githubusercontent.com/pccurico/install/refs/heads/master/
 
 3.- TimeShif
 curl -fsSL https://raw.githubusercontent.com/pccurico/install/refs/heads/master/timeshift-menu.sh | sudo bash
+
+4.- pccurico_hosting_install
+curl -fsSL https://raw.githubusercontent.com/pccurico/install/refs/heads/master/pccurico_hosting_install.sh | sudo bash
